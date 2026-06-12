@@ -18,6 +18,12 @@ from .fighter_ids import FIGHTER_A, FIGHTER_B
 from .observations import observation_dim
 
 
+def action_dim_for_fighter(fighter: "FighterCfg") -> int:
+    if fighter.controlled_joint_names:
+        return len(fighter.controlled_joint_names)
+    return get_unitree_robot_spec(fighter.robot_name).action_dim
+
+
 @configclass
 class FighterCfg:
     """Per-fighter robot and control settings."""
@@ -174,20 +180,14 @@ class GhostFighterUnitree1v1EnvCfg(DirectMARLEnvCfg):
 
     def __post_init__(self):
         self.possible_agents = [FIGHTER_A, FIGHTER_B]
-        dim_a = self._action_dim_for_fighter(self.fighter_a)
-        dim_b = self._action_dim_for_fighter(self.fighter_b)
+        dim_a = action_dim_for_fighter(self.fighter_a)
+        dim_b = action_dim_for_fighter(self.fighter_b)
         self.action_spaces = {FIGHTER_A: dim_a, FIGHTER_B: dim_b}
         self.observation_spaces = {FIGHTER_A: observation_dim(dim_a), FIGHTER_B: observation_dim(dim_b)}
         self.state_space = -1
         self.sim.render_interval = self.decimation
         if self.scene.env_spacing < self.arena.radius * 2.1:
             self.scene.env_spacing = self.arena.radius * 2.1
-
-    @staticmethod
-    def _action_dim_for_fighter(fighter: FighterCfg) -> int:
-        if fighter.controlled_joint_names:
-            return len(fighter.controlled_joint_names)
-        return get_unitree_robot_spec(fighter.robot_name).action_dim
 
 
 @configclass

@@ -71,7 +71,7 @@ from isaac_fight.tasks.direct.unitree_1v1.self_play import (
 
 logger = logging.getLogger(__name__)
 
-SKRL_VERSION = "2.0.0"
+SKRL_VERSION = "1.4.3"
 if version.parse(skrl.__version__) < version.parse(SKRL_VERSION):
     raise RuntimeError(f"skrl>={SKRL_VERSION} is required, found {skrl.__version__}")
 
@@ -89,6 +89,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
     if args_cli.max_iterations:
         agent_cfg["trainer"]["timesteps"] = args_cli.max_iterations * agent_cfg["agent"]["rollouts"]
+    if args_cli.self_play and args_cli.snapshot_interval:
+        checkpoint_every = max(1, args_cli.snapshot_interval) * agent_cfg["agent"]["rollouts"]
+        agent_cfg["agent"]["experiment"]["checkpoint_interval"] = checkpoint_every
     if args_cli.seed == -1:
         args_cli.seed = random.randint(0, 10000)
     agent_cfg["seed"] = args_cli.seed if args_cli.seed is not None else agent_cfg.get("seed", 42)

@@ -15,8 +15,8 @@ _COMMON_MODEL = {
     "min_log_std": -5.0,
     "max_log_std": 2.0,
     "initial_log_std": -1.2,
-    "network": [512, 256, 128],
-    "activation": "elu",
+    "network": [{"name": "net", "input": "OBSERVATIONS", "layers": [512, 256, 128], "activations": "elu"}],
+    "output": "ACTIONS",
 }
 
 IPPO_CFG = {
@@ -30,9 +30,13 @@ IPPO_CFG = {
         "value": {
             "class": "DeterministicMixin",
             "clip_actions": False,
-            "network": [512, 256, 128],
-            "activation": "elu",
+            "network": [{"name": "net", "input": "OBSERVATIONS", "layers": [512, 256, 128], "activations": "elu"}],
+            "output": "ONE",
         },
+    },
+    "memory": {
+        "class": "RandomMemory",
+        "memory_size": -1,
     },
     "agent": {
         "class": "IPPO",
@@ -85,9 +89,8 @@ MAPPO_CFG = {
         "value": {
             "class": "DeterministicMixin",
             "clip_actions": False,
-            "network": [768, 384, 192],
-            "activation": "elu",
-            "input": "states",
+            "network": [{"name": "net", "input": "STATES", "layers": [768, 384, 192], "activations": "elu"}],
+            "output": "ONE",
         },
     },
     "agent": {

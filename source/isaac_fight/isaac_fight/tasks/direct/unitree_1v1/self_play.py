@@ -72,7 +72,9 @@ class SelfPlayTrainingSupervisor:
             if resolved in known_paths:
                 continue
             version = _version_from_path(candidate)
-            pooled_path = Path(self.pool.root) / "checkpoints" / candidate.name
+            run_name = _safe_name(candidate.parent.parent.name if candidate.parent.name in {"checkpoints", "models"} else candidate.parent.name)
+            pooled_name = f"{run_name}_{candidate.name}" if run_name else candidate.name
+            pooled_path = Path(self.pool.root) / "checkpoints" / pooled_name
             pooled_path.parent.mkdir(parents=True, exist_ok=True)
             if resolved != pooled_path.resolve():
                 shutil.copy2(candidate, pooled_path)
@@ -173,6 +175,10 @@ def _looks_like_torchscript(path: Path) -> bool:
             return f.read(4) == b"PK\x03\x04"
     except OSError:
         return False
+
+
+def _safe_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
 
 
 def maybe_wrap_historical_opponent(env: gym.Env, cfg, log_dir: str | Path | None, args) -> gym.Env:  # noqa: ANN001
