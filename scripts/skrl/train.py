@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import sys
 
 from isaaclab.app import AppLauncher
@@ -105,21 +106,23 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         refresh_spaces = True
         env_cfg.episode_length_s = 10.0
         env_cfg.arena.radius = 2.0
-        env_cfg.fighter_a.spawn_xy = (-0.75, 0.0)
-        env_cfg.fighter_b.spawn_xy = (0.75, 0.0)
-        env_cfg.fighter_a.spawn_xy_noise = 0.06
-        env_cfg.fighter_b.spawn_xy_noise = 0.06
-        env_cfg.fighter_a.spawn_yaw_noise = 0.10
-        env_cfg.fighter_b.spawn_yaw_noise = 0.10
-        env_cfg.fighter_a.spawn_forward_speed = 1.15
-        env_cfg.fighter_b.spawn_forward_speed = 1.15
-        env_cfg.fighter_a.spawn_forward_speed_noise = 0.20
-        env_cfg.fighter_b.spawn_forward_speed_noise = 0.20
-        env_cfg.fighter_a.action_scale = 0.42
-        env_cfg.fighter_b.action_scale = 0.42
+        env_cfg.fighter_a.spawn_xy = (-0.75, -0.14)
+        env_cfg.fighter_b.spawn_xy = (0.75, 0.14)
+        env_cfg.fighter_a.spawn_yaw = 0.14
+        env_cfg.fighter_b.spawn_yaw = math.pi + 0.14
+        env_cfg.fighter_a.spawn_xy_noise = 0.10
+        env_cfg.fighter_b.spawn_xy_noise = 0.10
+        env_cfg.fighter_a.spawn_yaw_noise = 0.16
+        env_cfg.fighter_b.spawn_yaw_noise = 0.16
+        env_cfg.fighter_a.spawn_forward_speed = 1.05
+        env_cfg.fighter_b.spawn_forward_speed = 1.05
+        env_cfg.fighter_a.spawn_forward_speed_noise = 0.25
+        env_cfg.fighter_b.spawn_forward_speed_noise = 0.25
+        env_cfg.fighter_a.action_scale = 0.40
+        env_cfg.fighter_b.action_scale = 0.40
         env_cfg.fighter_a.action_smoothing = 0.22
         env_cfg.fighter_b.action_smoothing = 0.22
-        env_cfg.contact.useful_contact_distance = 1.65
+        env_cfg.contact.useful_contact_distance = 1.75
         env_cfg.curriculum.enabled = True
         env_cfg.curriculum.no_engagement_timeout_s = 4.0
         env_cfg.curriculum.no_engagement_grace_s = 1.5
