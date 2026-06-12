@@ -197,6 +197,8 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         if hasattr(self.env.unwrapped, "extras"):
             extras = self.env.unwrapped.extras
             for agent_info in extras.values():
+                if not isinstance(agent_info, dict):
+                    continue
                 agent_info.setdefault("self_play", {})
                 if self._current_sample is not None:
                     agent_info["self_play"].update(

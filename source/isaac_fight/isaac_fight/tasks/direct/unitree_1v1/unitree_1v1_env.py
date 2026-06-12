@@ -67,7 +67,6 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 prim_path=f"{prim_a}/.*",
                 update_period=0.0,
                 history_length=1,
-                filter_prim_paths_expr=[f"{prim_b}/.*"],
             )
         )
         self.scene.sensors[f"contact_{FIGHTER_B}"] = ContactSensor(
@@ -75,7 +74,6 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 prim_path=f"{prim_b}/.*",
                 update_period=0.0,
                 history_length=1,
-                filter_prim_paths_expr=[f"{prim_a}/.*"],
             )
         )
 
@@ -516,7 +514,14 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             if force_matrix is not None:
                 return torch.linalg.norm(force_matrix, dim=-1).amax(dim=(-1, -2))
             if hasattr(sensor.data, "net_forces_w"):
-                return torch.linalg.norm(sensor.data.net_forces_w, dim=-1).amax(dim=-1)
+                forces = sensor.data.net_forces_w
+                body_names = getattr(sensor, "body_names", ())
+                if body_names and forces.shape[1] == len(body_names):
+                    keep = [not any(token in name.lower() for token in ("foot", "ankle", "toe", "sole")) for name in body_names]
+                    if any(keep):
+                        mask = torch.tensor(keep, dtype=torch.bool, device=self.device)
+                        forces = forces[:, mask]
+                return torch.linalg.norm(forces, dim=-1).amax(dim=-1)
         return torch.zeros(self.num_envs, device=self.device)
 
     def _ground_or_scene_contact_force(self, agent: str) -> torch.Tensor:
