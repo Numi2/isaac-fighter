@@ -38,25 +38,26 @@ class CombatRewardComputer:
         support_contact = env._support_quality(agent) * standing_height
         low_base_height = torch.relu(0.88 - height_ratio) * (1.0 + 2.0 * (1.0 - upright))
         waist_action = env._waist_action_magnitude(agent)
+        combat_gate = env._combat_ready(agent)
 
         heading_error = heading_error_to_target(env.root_quat(agent), rel_pos)
         facing_gate = torch.clamp(torch.cos(heading_error), min=0.0)
         approach_delta = torch.clamp(prev_distance - distance, -0.25, 0.25)
-        controlled_approach = approach_delta * facing_gate * upright
-        locomotion_drive = env._locomotion_drive[agent] * facing_gate * upright
-        contact_intent = env._contact_intent[agent] * facing_gate * upright * env.proxy_reward_scale()
-        attack_momentum = env._attack_momentum[agent] * facing_gate * upright
+        controlled_approach = approach_delta * facing_gate * upright * combat_gate
+        locomotion_drive = env._locomotion_drive[agent] * facing_gate * upright * combat_gate
+        contact_intent = env._contact_intent[agent] * facing_gate * upright * env.proxy_reward_scale() * combat_gate
+        attack_momentum = env._attack_momentum[agent] * facing_gate * upright * combat_gate
 
         radial = torch.linalg.norm(root_pos[:, :2], dim=-1)
         arena_control = torch.clamp(1.0 - torch.square(radial / env.cfg.arena.radius), 0.0, 1.0)
         stay_inside = torch.clamp((env.cfg.arena.radius - radial) / env.cfg.arena.radius, -1.0, 1.0)
 
-        useful_contact = env._useful_contact[agent] * upright
-        destabilizing_impact = env._destabilizing_impact[agent] * upright
-        topple_pressure = env._topple_pressure[agent] * upright
-        drive_pressure = env._drive_pressure[agent] * upright
-        support_break_pressure = env._support_break_pressure[agent] * upright
-        recent_attack = torch.clamp(env._recent_attack_pressure[agent], 0.0, 5.0)
+        useful_contact = env._useful_contact[agent] * upright * combat_gate
+        destabilizing_impact = env._destabilizing_impact[agent] * upright * combat_gate
+        topple_pressure = env._topple_pressure[agent] * upright * combat_gate
+        drive_pressure = env._drive_pressure[agent] * upright * combat_gate
+        support_break_pressure = env._support_break_pressure[agent] * upright * combat_gate
+        recent_attack = torch.clamp(env._recent_attack_pressure[agent], 0.0, 5.0) * combat_gate
         attack_credit = torch.maximum(torch.clamp(env._proof_impact[agent], 0.0, 5.0), recent_attack)
         attack_gate = torch.clamp(attack_credit, 0.0, 1.0)
         opp_destabilization = env._opponent_destabilization[agent] * attack_gate

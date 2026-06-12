@@ -115,6 +115,7 @@ class CurriculumCfg:
     """Fast-contact bootstrap settings."""
 
     enabled: bool = True
+    standing_warmup_s: float = 1.25
     no_engagement_timeout_s: float = 3.0
     no_engagement_grace_s: float = 1.5
     engagement_min_training_contact: float = 0.02

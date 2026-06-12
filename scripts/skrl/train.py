@@ -138,36 +138,39 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.fighter_b.spawn_xy_noise = 0.05
         env_cfg.fighter_a.spawn_yaw_noise = 0.10
         env_cfg.fighter_b.spawn_yaw_noise = 0.10
-        env_cfg.fighter_a.spawn_forward_speed = 0.45
-        env_cfg.fighter_b.spawn_forward_speed = 0.45
-        env_cfg.fighter_a.spawn_forward_speed_noise = 0.08
-        env_cfg.fighter_b.spawn_forward_speed_noise = 0.08
-        env_cfg.fighter_a.action_scale = 0.28
-        env_cfg.fighter_b.action_scale = 0.28
-        env_cfg.fighter_a.action_smoothing = 0.22
-        env_cfg.fighter_b.action_smoothing = 0.22
+        env_cfg.fighter_a.spawn_forward_speed = 0.0
+        env_cfg.fighter_b.spawn_forward_speed = 0.0
+        env_cfg.fighter_a.spawn_forward_speed_noise = 0.0
+        env_cfg.fighter_b.spawn_forward_speed_noise = 0.0
+        env_cfg.fighter_a.action_scale = 0.20
+        env_cfg.fighter_b.action_scale = 0.20
+        env_cfg.fighter_a.action_smoothing = 0.35
+        env_cfg.fighter_b.action_smoothing = 0.35
         env_cfg.contact.useful_contact_distance = 1.45
         env_cfg.contact.attack_memory_s = 0.65
         env_cfg.contact.fall_credit_min_attack = 0.08
         env_cfg.curriculum.enabled = True
-        env_cfg.curriculum.no_engagement_timeout_s = 1.6
-        env_cfg.curriculum.no_engagement_grace_s = 0.45
+        env_cfg.curriculum.standing_warmup_s = max(float(env_cfg.curriculum.standing_warmup_s), 1.50)
+        env_cfg.curriculum.no_engagement_timeout_s = 4.5
+        env_cfg.curriculum.no_engagement_grace_s = 2.5
         env_cfg.curriculum.proxy_gain_anneal_steps = min(int(env_cfg.curriculum.proxy_gain_anneal_steps), 20_000)
         env_cfg.curriculum.min_proxy_gain = max(float(env_cfg.curriculum.min_proxy_gain), 0.20)
         env_cfg.self_play.opponent_update_interval = min(int(env_cfg.self_play.opponent_update_interval), 160)
         env_cfg.self_play.live_self_play_fraction = max(float(env_cfg.self_play.live_self_play_fraction), 0.45)
         env_cfg.rewards.contact_intent = max(float(env_cfg.rewards.contact_intent), 2.8)
-        env_cfg.rewards.standing_height = max(float(env_cfg.rewards.standing_height), 5.0)
-        env_cfg.rewards.support_contact = max(float(env_cfg.rewards.support_contact), 3.0)
-        env_cfg.rewards.low_base_height = max(float(env_cfg.rewards.low_base_height), 18.0)
-        env_cfg.rewards.waist_action = max(float(env_cfg.rewards.waist_action), 1.8)
+        env_cfg.rewards.standing_height = max(float(env_cfg.rewards.standing_height), 9.0)
+        env_cfg.rewards.support_contact = max(float(env_cfg.rewards.support_contact), 5.0)
+        env_cfg.rewards.low_base_height = max(float(env_cfg.rewards.low_base_height), 35.0)
+        env_cfg.rewards.waist_action = max(float(env_cfg.rewards.waist_action), 4.0)
         env_cfg.rewards.locomotion_drive = max(float(env_cfg.rewards.locomotion_drive), 3.2)
         env_cfg.rewards.attack_momentum = max(float(env_cfg.rewards.attack_momentum), 3.4)
         env_cfg.rewards.drive_pressure = max(float(env_cfg.rewards.drive_pressure), 6.2)
         env_cfg.rewards.support_break_pressure = max(float(env_cfg.rewards.support_break_pressure), 7.2)
         env_cfg.rewards.opponent_fall = max(float(env_cfg.rewards.opponent_fall), 22.0)
         env_cfg.rewards.opponent_knockdown = max(float(env_cfg.rewards.opponent_knockdown), 36.0)
-        env_cfg.rewards.posture_instability = max(float(env_cfg.rewards.posture_instability), 2.4)
+        env_cfg.rewards.impact_self_destabilization = max(float(env_cfg.rewards.impact_self_destabilization), 18.0)
+        env_cfg.rewards.posture_instability = max(float(env_cfg.rewards.posture_instability), 7.0)
+        env_cfg.rewards.self_fall = max(float(env_cfg.rewards.self_fall), 45.0)
         env_cfg.rewards.energy = min(float(env_cfg.rewards.energy), 0.010)
         env_cfg.rewards.jitter = min(float(env_cfg.rewards.jitter), 0.08)
         env_cfg.diagnostics.reward_terms_interval = max(int(env_cfg.diagnostics.reward_terms_interval), 64)
@@ -304,7 +307,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "algorithm": algorithm.upper(),
             "task": args_cli.task,
             "seed": args_cli.seed,
-            "reward_version": "combat_flywheel_v4_fast8k",
+            "reward_version": "stance_first_v7_fast8k",
             "config_hash": hashlib.sha256(
                 json.dumps(
                     {

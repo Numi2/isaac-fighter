@@ -82,6 +82,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._upper_contact_body_id_tensors: dict[str, torch.Tensor] = {}
         self._strike_body_id_tensors: dict[str, torch.Tensor] = {}
         self._waist_action_id_tensors: dict[str, torch.Tensor] = {}
+        self._action_scale_tensors: dict[str, torch.Tensor] = {}
         self._resolve_controlled_joints()
         self._allocate_buffers()
         self._configure_replay()
@@ -196,6 +197,11 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 default_base_height=spec.default_base_height,
                 action_scale=float(scale),
             )
+            self._action_scale_tensors[agent] = torch.as_tensor(
+                [self._joint_action_scale_multiplier(name) for name in resolved_names],
+                dtype=torch.float32,
+                device=self.device,
+            ).unsqueeze(0) * float(scale)
             waist_action_ids = [idx for idx, name in enumerate(resolved_names) if "waist" in name.lower()]
             self._waist_action_id_tensors[agent] = torch.as_tensor(
                 waist_action_ids, dtype=torch.long, device=self.device
@@ -353,13 +359,29 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         robot = self.robots[agent]
         ids = self._runtime[agent].joint_ids
         default = robot.data.default_joint_pos[:, ids]
-        target = default + self._actions[agent] * self._runtime[agent].action_scale
+        action_scale = self._action_scale_tensors.get(agent)
+        if action_scale is None:
+            action_scale = torch.full_like(self._actions[agent], self._runtime[agent].action_scale)
+        target = default + self._actions[agent] * action_scale
         limits = getattr(robot.data, "soft_joint_pos_limits", None)
         if limits is not None:
             lo = limits[:, ids, 0]
             hi = limits[:, ids, 1]
             target = torch.maximum(torch.minimum(target, hi), lo)
         return target
+
+    @staticmethod
+    def _joint_action_scale_multiplier(joint_name: str) -> float:
+        lower = joint_name.lower()
+        if "waist" in lower or "torso" in lower:
+            return 0.10
+        if "wrist" in lower:
+            return 0.18
+        if "shoulder" in lower or "elbow" in lower:
+            return 0.35
+        if "ankle" in lower:
+            return 0.65
+        return 1.0
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
         return {agent: self._obs_builder.build(self, agent, opponent_of(agent)) for agent in FIGHTERS}
@@ -934,6 +956,27 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
     def _support_quality(self, agent: str) -> torch.Tensor:
         support_force = self._support_contact_force(agent)
         return torch.clamp(support_force / self.cfg.contact.force_normalizer, 0.0, 1.0)
+
+    def _stance_quality(self, agent: str) -> torch.Tensor:
+        height_ratio = self.root_pos(agent)[:, 2] / max(self._runtime[agent].default_base_height, 1.0e-6)
+        height_quality = torch.exp(-16.0 * torch.square(height_ratio - 1.0))
+        upright_quality = torch.clamp(
+            (self._up_z[agent] - self.cfg.rules.knockdown_up_axis_z)
+            / max(1.0 - self.cfg.rules.knockdown_up_axis_z, 1.0e-6),
+            0.0,
+            1.0,
+        )
+        return height_quality * upright_quality * self._support_quality(agent)
+
+    def _combat_ready(self, agent: str) -> torch.Tensor:
+        episode_time = self.episode_length_buf.float() * self.step_dt
+        warmup = torch.clamp(
+            (episode_time - float(self.cfg.curriculum.standing_warmup_s)) / 0.50,
+            0.0,
+            1.0,
+        )
+        stance = torch.clamp((self._stance_quality(agent) - 0.25) / 0.50, 0.0, 1.0)
+        return warmup * stance
 
     def _waist_action_magnitude(self, agent: str) -> torch.Tensor:
         waist_ids = self._waist_action_id_tensors.get(agent)
