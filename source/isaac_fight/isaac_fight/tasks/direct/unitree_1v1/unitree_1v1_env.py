@@ -1159,6 +1159,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                     average_value = float((values[env_ids] / counts).mean().item())
                     log[f"Combat/{metric_name}_per_step"] = average_value
                     skrl_log[f"{agent}/Combat/{metric_name}_per_step"] = torch.tensor(average_value, device=self.device)
+                    combat_totals.setdefault(metric_name, 0.0)
                     combat_totals[metric_name] += average_value
                 skrl_log[f"{agent}/Episode/{name}"] = torch.tensor(log[f"Episode/{name}"], device=self.device)
             win_rate = float((self._winner[env_ids] == own_id).float().mean().item())
