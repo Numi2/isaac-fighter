@@ -129,7 +129,7 @@ class SelfPlayTrainingSupervisor:
             pooled_path.parent.mkdir(parents=True, exist_ok=True)
             if resolved != pooled_path.resolve():
                 shutil.copy2(candidate, pooled_path)
-            tags = ("torchscript",) if _looks_like_torchscript(candidate) else ("skrl",)
+            tags = ("skrl",) if _looks_like_skrl_checkpoint(candidate) else ("torchscript",)
             self.pool.add_checkpoint(pooled_path, version=version, elo=self.active_elo, tags=tags, metadata=self.metadata or {})
             known_paths.add(pooled_path.resolve())
             added += 1
@@ -224,10 +224,10 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         path = Path(sample.policy.checkpoint_path)
         if not path.exists():
             return
-        if "torchscript" in sample.policy.tags:
-            self._backend = TorchScriptPolicyBackend(path, device=self.device)
-        elif "skrl" in sample.policy.tags:
+        if "skrl" in sample.policy.tags or _looks_like_skrl_checkpoint(path):
             self._backend = SkrlCheckpointPolicyBackend(path, agent_id=self.opponent_agent, device=self.device)
+        elif "torchscript" in sample.policy.tags:
+            self._backend = TorchScriptPolicyBackend(path, device=self.device)
 
 
 def _version_from_path(path: Path) -> int:
@@ -236,12 +236,24 @@ def _version_from_path(path: Path) -> int:
 
 
 def _looks_like_torchscript(path: Path) -> bool:
-    # TorchScript archives are zip files. skrl checkpoints are usually pickled dictionaries.
+    # TorchScript archives are zip files, but modern torch.save checkpoints are zip files too.
     try:
         with path.open("rb") as f:
-            return f.read(4) == b"PK\x03\x04"
+            return f.read(4) == b"PK\x03\x04" and not _looks_like_skrl_checkpoint(path)
     except OSError:
         return False
+
+
+def _looks_like_skrl_checkpoint(path: Path) -> bool:
+    try:
+        checkpoint = torch.load(path, map_location="cpu")
+    except Exception:
+        return False
+    if not isinstance(checkpoint, dict):
+        return False
+    if "policy" in checkpoint:
+        return True
+    return any(isinstance(value, dict) and "policy" in value for value in checkpoint.values())
 
 
 def _safe_name(value: str) -> str:
