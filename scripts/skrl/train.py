@@ -161,6 +161,8 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.rewards.standing_height = max(float(env_cfg.rewards.standing_height), 9.0)
         env_cfg.rewards.support_contact = max(float(env_cfg.rewards.support_contact), 5.0)
         env_cfg.rewards.low_base_height = max(float(env_cfg.rewards.low_base_height), 35.0)
+        env_cfg.rewards.backward_motion = max(float(env_cfg.rewards.backward_motion), 18.0)
+        env_cfg.rewards.backward_lean = max(float(env_cfg.rewards.backward_lean), 24.0)
         env_cfg.rewards.waist_action = max(float(env_cfg.rewards.waist_action), 4.0)
         env_cfg.rewards.locomotion_drive = max(float(env_cfg.rewards.locomotion_drive), 3.2)
         env_cfg.rewards.attack_momentum = max(float(env_cfg.rewards.attack_momentum), 3.4)

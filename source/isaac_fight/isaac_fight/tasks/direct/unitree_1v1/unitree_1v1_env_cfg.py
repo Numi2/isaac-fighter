@@ -132,6 +132,8 @@ class RewardScalesCfg:
     standing_height: float = 2.50
     support_contact: float = 1.60
     low_base_height: float = 8.00
+    backward_motion: float = 3.00
+    backward_lean: float = 4.00
     waist_action: float = 0.80
     controlled_approach: float = 1.80
     locomotion_drive: float = 2.40

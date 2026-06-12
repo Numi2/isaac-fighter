@@ -37,6 +37,8 @@ class CombatRewardComputer:
         standing_height = upright * torch.exp(-16.0 * torch.square(height_ratio - 1.0))
         support_contact = env._support_quality(agent) * standing_height
         low_base_height = torch.relu(0.88 - height_ratio) * (1.0 + 2.0 * (1.0 - upright))
+        backward_motion = torch.relu(-env.root_lin_vel_b(agent)[:, 0]) * (0.35 + 0.65 * upright)
+        backward_lean = torch.relu(env.projected_gravity_b(agent)[:, 0] - 0.08) * (0.5 + 0.5 * upright)
         waist_action = env._waist_action_magnitude(agent)
         combat_gate = env._combat_ready(agent)
 
@@ -91,6 +93,8 @@ class CombatRewardComputer:
             "standing_height": scales.standing_height * standing_height,
             "support_contact": scales.support_contact * support_contact,
             "low_base_height": -scales.low_base_height * low_base_height,
+            "backward_motion": -scales.backward_motion * backward_motion,
+            "backward_lean": -scales.backward_lean * backward_lean,
             "waist_action": -scales.waist_action * waist_action,
             "controlled_approach": scales.controlled_approach * controlled_approach,
             "locomotion_drive": scales.locomotion_drive * locomotion_drive,
