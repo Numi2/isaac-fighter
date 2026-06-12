@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.python-version
+.env
+.env.*
+.coverage
+htmlcov/
+
+# Isaac / Omniverse
+*.usd.tmp
+.omniverse/
+kit/logs/
+cache/
+logs/
+runs/
+recordings/
+replays/
+checkpoints/
+policy_pool/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,17 @@
+[package]
+version = "0.1.0"
+category = "robotics"
+title = "Isaac Fight"
+description = "Standalone Isaac Lab extension for Unitree humanoid 1v1 combat self-play."
+readme = "docs/README.md"
+keywords = ["Isaac Lab", "reinforcement learning", "multi-agent", "Unitree", "humanoid", "self-play"]
+authors = ["Isaac Fight contributors"]
+repository = "https://github.com/numan-ai/isaac-fight"
+
+[dependencies]
+"isaaclab" = {}
+"isaaclab_assets" = {}
+"isaaclab_rl" = {}
+
+[[python.module]]
+name = "isaac_fight"

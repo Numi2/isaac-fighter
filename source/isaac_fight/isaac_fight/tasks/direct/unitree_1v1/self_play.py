@@ -1,0 +1,200 @@
+# Copyright (c) 2026, Isaac Fight contributors.
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Self-play population utilities.
+
+Historical opponents are learned policies loaded from a checkpoint pool. The wrapper does not contain scripted fight
+logic: it only replaces an opponent action tensor with the output of a sampled policy network.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
+
+import gymnasium as gym
+import torch
+
+from .fighter_ids import FIGHTER_A, FIGHTER_B, opponent_of
+from .opponent_pool import OpponentPool, OpponentSample
+
+
+class PolicyBackend(Protocol):
+    def act(self, observations: torch.Tensor) -> torch.Tensor: ...
+
+
+class TorchScriptPolicyBackend:
+    """Inference backend for exported TorchScript policies."""
+
+    def __init__(self, path: str | Path, device: str = "cuda:0"):
+        self.path = Path(path)
+        self.device = torch.device(device if torch.cuda.is_available() and "cuda" in str(device) else "cpu")
+        self.module = torch.jit.load(str(self.path), map_location=self.device)
+        self.module.eval()
+
+    @torch.no_grad()
+    def act(self, observations: torch.Tensor) -> torch.Tensor:
+        obs = observations.to(self.device)
+        out = self.module(obs)
+        if isinstance(out, dict):
+            out = out.get("actions", next(iter(out.values())))
+        if isinstance(out, tuple):
+            out = out[0]
+        return torch.clamp(out.to(observations.device), -1.0, 1.0)
+
+
+@dataclass
+class SelfPlayTrainingSupervisor:
+    """Synchronizes skrl checkpoint folders with the persistent opponent pool."""
+
+    pool_dir: str | Path
+    checkpoint_dir: str | Path
+    snapshot_interval: int = 50
+    active_elo: float = 1000.0
+
+    def __post_init__(self):
+        self.pool = OpponentPool(self.pool_dir)
+        self.checkpoint_dir = Path(self.checkpoint_dir)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    def sync_checkpoints(self) -> int:
+        """Add unseen checkpoints to the policy pool and return the number added."""
+
+        known_paths = {Path(p.checkpoint_path).resolve() for p in self.pool.policies if Path(p.checkpoint_path).exists()}
+        candidates = sorted(self.checkpoint_dir.rglob("*.pt"), key=lambda p: (p.stat().st_mtime, str(p)))
+        added = 0
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            if resolved in known_paths:
+                continue
+            version = _version_from_path(candidate)
+            pooled_path = Path(self.pool.root) / "checkpoints" / candidate.name
+            pooled_path.parent.mkdir(parents=True, exist_ok=True)
+            if resolved != pooled_path.resolve():
+                shutil.copy2(candidate, pooled_path)
+            tags = ("torchscript",) if _looks_like_torchscript(candidate) else ("skrl",)
+            self.pool.add_checkpoint(pooled_path, version=version, elo=self.active_elo, tags=tags)
+            known_paths.add(pooled_path.resolve())
+            added += 1
+        return added
+
+    def sample(self, active_elo: float | None = None) -> OpponentSample | None:
+        return self.pool.sample(active_elo=active_elo if active_elo is not None else self.active_elo)
+
+
+class HistoricalOpponentActionWrapper(gym.Wrapper):
+    """Gymnasium wrapper that samples learned historical opponents from a policy pool.
+
+    The wrapped environment remains multi-agent. One agent is active for the trainer; the opponent action is generated
+    from a sampled checkpoint. If no compatible checkpoint is present, the wrapper leaves trainer-provided actions
+    unchanged so IPPO/MAPPO can bootstrap the first policy population.
+    """
+
+    def __init__(
+        self,
+        env: gym.Env,
+        pool: OpponentPool,
+        active_agent: str = FIGHTER_A,
+        device: str = "cuda:0",
+        elo_window: float = 250.0,
+        weakness_bias: float = 0.65,
+        latest_bias: float = 0.15,
+    ):
+        super().__init__(env)
+        self.pool = pool
+        self.active_agent = active_agent
+        self.opponent_agent = opponent_of(active_agent)
+        self.device = device
+        self.elo_window = elo_window
+        self.weakness_bias = weakness_bias
+        self.latest_bias = latest_bias
+        self._last_obs: dict[str, torch.Tensor] | None = None
+        self._current_sample: OpponentSample | None = None
+        self._backend: PolicyBackend | None = None
+
+    def reset(self, **kwargs):  # noqa: ANN003
+        obs, info = self.env.reset(**kwargs)
+        self._last_obs = obs
+        self._sample_backend()
+        return obs, info
+
+    def step(self, actions):  # noqa: ANN001
+        if self._backend is not None and self._last_obs is not None and self.opponent_agent in self._last_obs:
+            actions = dict(actions)
+            actions[self.opponent_agent] = self._backend.act(self._last_obs[self.opponent_agent])
+        obs, rewards, terminated, truncated, infos = self.env.step(actions)
+        self._last_obs = obs
+        if hasattr(self.env.unwrapped, "extras"):
+            extras = self.env.unwrapped.extras
+            for agent_info in extras.values():
+                agent_info.setdefault("self_play", {})
+                if self._current_sample is not None:
+                    agent_info["self_play"].update(
+                        {
+                            "opponent_policy_id": self._current_sample.policy.policy_id,
+                            "opponent_version": self._current_sample.policy.version,
+                            "opponent_elo": self._current_sample.policy.elo,
+                            "opponent_sample_probability": self._current_sample.probability,
+                        }
+                    )
+        return obs, rewards, terminated, truncated, infos
+
+    def _sample_backend(self) -> None:
+        sample = self.pool.sample(
+            active_elo=1000.0,
+            elo_window=self.elo_window,
+            weakness_bias=self.weakness_bias,
+            latest_bias=self.latest_bias,
+        )
+        self._current_sample = sample
+        self._backend = None
+        if sample is None:
+            return
+        if "torchscript" not in sample.policy.tags:
+            return
+        path = Path(sample.policy.checkpoint_path)
+        if path.exists():
+            self._backend = TorchScriptPolicyBackend(path, device=self.device)
+
+
+def _version_from_path(path: Path) -> int:
+    match = re.search(r"(\d+)(?!.*\d)", path.stem)
+    return int(match.group(1)) if match else int(path.stat().st_mtime)
+
+
+def _looks_like_torchscript(path: Path) -> bool:
+    # TorchScript archives are zip files. skrl checkpoints are usually pickled dictionaries.
+    try:
+        with path.open("rb") as f:
+            return f.read(4) == b"PK\x03\x04"
+    except OSError:
+        return False
+
+
+def maybe_wrap_historical_opponent(env: gym.Env, cfg, log_dir: str | Path | None, args) -> gym.Env:  # noqa: ANN001
+    if not getattr(args, "historical_opponent", False):
+        return env
+    pool_dir = getattr(args, "pool_dir", None) or getattr(cfg.self_play, "pool_dir", "policy_pool")
+    pool = OpponentPool(pool_dir)
+    return HistoricalOpponentActionWrapper(
+        env,
+        pool=pool,
+        active_agent=getattr(args, "active_agent", cfg.self_play.active_agent),
+        device=getattr(args, "device", "cuda:0") or "cuda:0",
+        elo_window=cfg.self_play.elo_window,
+        weakness_bias=cfg.self_play.weakness_bias,
+        latest_bias=cfg.self_play.latest_bias,
+    )
+
+
+def checkpoint_dir_from_log_dir(log_dir: str | Path) -> Path:
+    log_dir = Path(log_dir)
+    for name in ("checkpoints", "models"):
+        candidate = log_dir / name
+        if candidate.exists():
+            return candidate
+    return log_dir / "checkpoints"
