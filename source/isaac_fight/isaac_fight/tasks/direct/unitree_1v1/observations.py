@@ -9,7 +9,7 @@ import torch
 
 from isaac_fight.utils.torch_math import heading_error_to_target, rotate_yaw_inverse
 
-BASE_FEATURE_DIM = 39
+BASE_FEATURE_DIM = 47
 OPPONENT_KEYPOINTS = 7
 KEYPOINT_FEATURE_DIM = OPPONENT_KEYPOINTS * 6
 
@@ -85,6 +85,7 @@ class CombatObservationBuilder:
             ),
             dim=-1,
         )
+        phase_features = env._phase_features(agent, opponent)
 
         joint_pos_rel = env.joint_pos_rel(agent)
         joint_vel = torch.clamp(
@@ -105,6 +106,7 @@ class CombatObservationBuilder:
                 heading_features,
                 arena_features,
                 rule_features,
+                phase_features,
                 torch.clamp(joint_pos_rel * self.cfg.joint_position_scale, -5.0, 5.0),
                 joint_vel,
                 last_action,

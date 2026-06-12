@@ -165,7 +165,12 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.rewards.low_base_height = max(float(env_cfg.rewards.low_base_height), 80.0)
         env_cfg.rewards.standing_pose = max(float(env_cfg.rewards.standing_pose), 12.0)
         env_cfg.rewards.warmup_action_restraint = max(float(env_cfg.rewards.warmup_action_restraint), 8.0)
+        env_cfg.rewards.stand_still_joint_deviation = max(float(env_cfg.rewards.stand_still_joint_deviation), 10.0)
+        env_cfg.rewards.arm_motion_restraint = max(float(env_cfg.rewards.arm_motion_restraint), 6.0)
+        env_cfg.rewards.hip_yaw_roll_deviation = max(float(env_cfg.rewards.hip_yaw_roll_deviation), 5.0)
         env_cfg.rewards.center_of_mass_over_support = max(float(env_cfg.rewards.center_of_mass_over_support), 14.0)
+        env_cfg.rewards.capture_point_support = max(float(env_cfg.rewards.capture_point_support), 9.0)
+        env_cfg.rewards.both_feet_support_warmup = max(float(env_cfg.rewards.both_feet_support_warmup), 10.0)
         env_cfg.rewards.foot_support_quality = max(float(env_cfg.rewards.foot_support_quality), 10.0)
         env_cfg.rewards.foot_slip = max(float(env_cfg.rewards.foot_slip), 8.0)
         env_cfg.rewards.base_pitch_roll = max(float(env_cfg.rewards.base_pitch_roll), 28.0)
@@ -178,12 +183,16 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.rewards.backward_motion = max(float(env_cfg.rewards.backward_motion), 18.0)
         env_cfg.rewards.backward_lean = max(float(env_cfg.rewards.backward_lean), 24.0)
         env_cfg.rewards.waist_action = max(float(env_cfg.rewards.waist_action), 4.0)
+        env_cfg.rewards.velocity_command_tracking = max(float(env_cfg.rewards.velocity_command_tracking), 8.0)
+        env_cfg.rewards.yaw_heading_tracking = max(float(env_cfg.rewards.yaw_heading_tracking), 5.0)
         env_cfg.rewards.locomotion_drive = max(float(env_cfg.rewards.locomotion_drive), 3.2)
         env_cfg.rewards.forward_step_progress = max(float(env_cfg.rewards.forward_step_progress), 5.0)
         env_cfg.rewards.retreat_from_opponent = max(float(env_cfg.rewards.retreat_from_opponent), 8.0)
         env_cfg.rewards.approach_with_feet_gate = max(float(env_cfg.rewards.approach_with_feet_gate), 5.0)
         env_cfg.rewards.stance_width = max(float(env_cfg.rewards.stance_width), 3.0)
         env_cfg.rewards.foot_clearance = max(float(env_cfg.rewards.foot_clearance), 1.5)
+        env_cfg.rewards.feet_air_time_biped = max(float(env_cfg.rewards.feet_air_time_biped), 3.0)
+        env_cfg.rewards.single_stance_balance = max(float(env_cfg.rewards.single_stance_balance), 4.0)
         env_cfg.rewards.cadence_or_alternating_support = max(float(env_cfg.rewards.cadence_or_alternating_support), 1.4)
         env_cfg.rewards.root_height_velocity_down = max(float(env_cfg.rewards.root_height_velocity_down), 25.0)
         env_cfg.rewards.torso_only_motion = max(float(env_cfg.rewards.torso_only_motion), 24.0)
@@ -353,7 +362,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "algorithm": algorithm.upper(),
             "task": args_cli.task,
             "seed": args_cli.seed,
-            "reward_version": "standing_first_v11",
+            "reward_version": "standing_locomotion_fight_v12",
             "config_hash": hashlib.sha256(
                 json.dumps(
                     {

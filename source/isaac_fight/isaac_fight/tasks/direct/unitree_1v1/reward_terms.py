@@ -51,6 +51,7 @@ class CombatRewardComputer:
         support_center = env._support_center_xy(agent)
         support_radius = env._support_radius(agent)
         root_support_distance = torch.linalg.norm(root_pos[:, :2] - support_center, dim=-1)
+        capture_point_support = env._capture_point_support_quality(agent) * support_quality * upright
         center_of_mass_over_support = (
             torch.exp(-torch.square(root_support_distance / torch.clamp(support_radius + 0.12, min=0.12)))
             * support_quality
@@ -72,11 +73,31 @@ class CombatRewardComputer:
         warmup_gate = (episode_time < warmup_s).float()
         after_warmup = torch.clamp((episode_time - warmup_s) / 0.75, 0.0, 1.0)
         early_fall_window = torch.clamp((2.0 - episode_time) / 2.0, 0.0, 1.0)
+        action_gate = env._standing_warmup_action_gate()
         warmup_action_restraint = warmup_gate * env._posture_action_magnitude(agent) * (1.0 + 2.0 * (1.0 - upright))
+        stand_still_joint_deviation = env._stand_still_joint_deviation(agent) * torch.clamp(
+            warmup_gate + 0.50 * (1.0 - action_gate), 0.0, 1.0
+        )
+        arm_motion_restraint = env._arm_motion_magnitude(agent) * (
+            1.0 - torch.clamp(combat_gate * (distance < 0.70).float(), 0.0, 1.0)
+        )
+        hip_yaw_roll_deviation = env._hip_yaw_roll_deviation(agent) * (0.35 + 0.65 * action_gate)
+        both_feet_support_warmup = warmup_gate * env._both_feet_support(agent)
 
         heading_error = heading_error_to_target(env.root_quat(agent), rel_pos)
         facing_gate = torch.clamp(torch.cos(heading_error), min=0.0)
         approach_delta = torch.clamp(prev_distance - distance, -0.25, 0.25)
+        desired_approach_speed = env._desired_approach_speed(agent, opponent)
+        lateral_speed = torch.linalg.norm(root_lin_vel_w[:, :2] - toward_speed.unsqueeze(-1) * rel_dir[:, :2], dim=-1)
+        velocity_command_tracking = (
+            torch.exp(-torch.square((toward_speed - desired_approach_speed) / 0.45))
+            * torch.exp(-torch.square(lateral_speed / 0.35))
+            * foot_support_quality
+            * facing_gate
+            * action_gate
+            * (desired_approach_speed > 0.05).float()
+        )
+        yaw_heading_tracking = torch.exp(-torch.square(heading_error / 0.55)) * upright * (0.25 + 0.75 * action_gate)
         controlled_approach = approach_delta * facing_gate * upright * combat_gate
         locomotion_drive = env._locomotion_drive[agent] * facing_gate * upright * combat_gate
         forward_step_progress = torch.relu(approach_delta) * foot_support_quality * facing_gate
@@ -85,6 +106,9 @@ class CombatRewardComputer:
         stance_width_value = env._support_stance_width(agent)
         stance_width = torch.exp(-torch.square((stance_width_value - 0.34) / 0.24)) * upright
         foot_clearance = env._support_clearance(agent) * torch.clamp(root_speed / 1.0, 0.0, 1.0) * upright
+        locomotion_phase = (desired_approach_speed > 0.05).float()
+        feet_air_time_biped = env._feet_air_time_biped(agent) * locomotion_phase * facing_gate
+        single_stance_balance = env._single_stance_balance(agent) * locomotion_phase
         cadence_or_alternating_support = (
             torch.clamp(torch.abs(env._support_bias(agent) - env._prev_support_bias[agent]) / 0.75, 0.0, 1.0)
             * torch.clamp(root_speed / 1.0, 0.0, 1.0)
@@ -197,7 +221,12 @@ class CombatRewardComputer:
             "low_base_height": -scales.low_base_height * low_base_height,
             "standing_pose": scales.standing_pose * standing_pose,
             "warmup_action_restraint": -scales.warmup_action_restraint * warmup_action_restraint,
+            "stand_still_joint_deviation": -scales.stand_still_joint_deviation * stand_still_joint_deviation,
+            "arm_motion_restraint": -scales.arm_motion_restraint * arm_motion_restraint,
+            "hip_yaw_roll_deviation": -scales.hip_yaw_roll_deviation * hip_yaw_roll_deviation,
             "center_of_mass_over_support": scales.center_of_mass_over_support * center_of_mass_over_support,
+            "capture_point_support": scales.capture_point_support * capture_point_support,
+            "both_feet_support_warmup": scales.both_feet_support_warmup * both_feet_support_warmup,
             "foot_support_quality": scales.foot_support_quality * foot_support_quality,
             "foot_slip": -scales.foot_slip * foot_slip,
             "base_pitch_roll": -scales.base_pitch_roll * base_pitch_roll,
@@ -211,12 +240,16 @@ class CombatRewardComputer:
             "backward_lean": -scales.backward_lean * backward_lean,
             "waist_action": -scales.waist_action * waist_action,
             "controlled_approach": scales.controlled_approach * controlled_approach,
+            "velocity_command_tracking": scales.velocity_command_tracking * velocity_command_tracking,
+            "yaw_heading_tracking": scales.yaw_heading_tracking * yaw_heading_tracking,
             "locomotion_drive": scales.locomotion_drive * locomotion_drive,
             "forward_step_progress": scales.forward_step_progress * forward_step_progress,
             "retreat_from_opponent": -scales.retreat_from_opponent * retreat_from_opponent,
             "approach_with_feet_gate": scales.approach_with_feet_gate * approach_with_feet_gate,
             "stance_width": scales.stance_width * stance_width,
             "foot_clearance": scales.foot_clearance * foot_clearance,
+            "feet_air_time_biped": scales.feet_air_time_biped * feet_air_time_biped,
+            "single_stance_balance": scales.single_stance_balance * single_stance_balance,
             "cadence_or_alternating_support": scales.cadence_or_alternating_support * cadence_or_alternating_support,
             "root_height_velocity_down": -scales.root_height_velocity_down * root_height_velocity_down,
             "torso_only_motion": -scales.torso_only_motion * torso_only_motion,

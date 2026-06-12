@@ -85,8 +85,10 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._strike_body_id_tensors: dict[str, torch.Tensor] = {}
         self._torso_contact_body_id_tensors: dict[str, torch.Tensor] = {}
         self._waist_action_id_tensors: dict[str, torch.Tensor] = {}
+        self._arm_action_id_tensors: dict[str, torch.Tensor] = {}
         self._leg_action_id_tensors: dict[str, torch.Tensor] = {}
         self._knee_action_id_tensors: dict[str, torch.Tensor] = {}
+        self._hip_yaw_roll_action_id_tensors: dict[str, torch.Tensor] = {}
         self._posture_action_id_tensors: dict[str, torch.Tensor] = {}
         self._action_scale_tensors: dict[str, torch.Tensor] = {}
         self._resolve_controlled_joints()
@@ -212,15 +214,29 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._waist_action_id_tensors[agent] = torch.as_tensor(
                 waist_action_ids, dtype=torch.long, device=self.device
             )
+            arm_action_ids = [
+                idx
+                for idx, name in enumerate(resolved_names)
+                if any(token in name.lower() for token in ("shoulder", "elbow", "wrist", "hand", "finger"))
+            ]
             leg_action_ids = [
                 idx
                 for idx, name in enumerate(resolved_names)
                 if any(token in name.lower() for token in ("hip", "knee", "ankle"))
             ]
             knee_action_ids = [idx for idx, name in enumerate(resolved_names) if "knee" in name.lower()]
+            hip_yaw_roll_action_ids = [
+                idx
+                for idx, name in enumerate(resolved_names)
+                if "hip_yaw" in name.lower() or "hip_roll" in name.lower()
+            ]
             posture_action_ids = sorted(set(leg_action_ids + waist_action_ids))
+            self._arm_action_id_tensors[agent] = torch.as_tensor(arm_action_ids, dtype=torch.long, device=self.device)
             self._leg_action_id_tensors[agent] = torch.as_tensor(leg_action_ids, dtype=torch.long, device=self.device)
             self._knee_action_id_tensors[agent] = torch.as_tensor(knee_action_ids, dtype=torch.long, device=self.device)
+            self._hip_yaw_roll_action_id_tensors[agent] = torch.as_tensor(
+                hip_yaw_roll_action_ids, dtype=torch.long, device=self.device
+            )
             self._posture_action_id_tensors[agent] = torch.as_tensor(
                 posture_action_ids or list(range(action_dim)), dtype=torch.long, device=self.device
             )
@@ -347,6 +363,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._prev_root_lin_vel_w = {agent: torch.zeros(n, 3, device=device) for agent in FIGHTERS}
         self._prev_up_z = {agent: torch.ones(n, device=device) for agent in FIGHTERS}
         self._prev_support_bias = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._left_support_air_time = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._right_support_air_time = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._support_step_reward = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._no_engagement_clock = torch.zeros(n, device=device)
 
         self._winner = torch.zeros(n, dtype=torch.long, device=device)
@@ -417,11 +436,15 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
     def _apply_standing_warmup_action_gate(self, raw: torch.Tensor) -> torch.Tensor:
         if not self.cfg.curriculum.enabled:
             return raw
+        return raw * self._standing_warmup_action_gate().unsqueeze(-1)
+
+    def _standing_warmup_action_gate(self) -> torch.Tensor:
+        if not self.cfg.curriculum.enabled:
+            return torch.ones(self.num_envs, device=self.device)
         hold_s = max(0.0, float(getattr(self.cfg.curriculum, "action_hold_s", 0.0)))
         ramp_s = max(1.0e-6, float(getattr(self.cfg.curriculum, "action_ramp_s", 0.0)))
         episode_time = self.episode_length_buf.float() * self.step_dt
-        gate = torch.clamp((episode_time - hold_s) / ramp_s, 0.0, 1.0).unsqueeze(-1)
-        return raw * gate
+        return torch.clamp((episode_time - hold_s) / ramp_s, 0.0, 1.0)
 
     @staticmethod
     def _joint_action_scale_multiplier(joint_name: str) -> float:
@@ -607,6 +630,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._prev_root_lin_vel_w[agent][env_ids] = self.root_lin_vel_w(agent)[env_ids].detach()
             self._prev_up_z[agent][env_ids] = self._rule_engine.up_axis_z(self.root_quat(agent))[env_ids].detach()
             self._prev_support_bias[agent][env_ids] = self._support_bias(agent)[env_ids].detach()
+            self._left_support_air_time[agent][env_ids] = 0.0
+            self._right_support_air_time[agent][env_ids] = 0.0
+            self._support_step_reward[agent][env_ids] = 0.0
             for tensor in self._episode_sums[agent].values():
                 tensor[env_ids] = 0.0
             self._episode_counts[agent][env_ids] = 0.0
@@ -630,6 +656,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._knockdown[agent] = self._rule_engine.knockdown(root_pos, root_quat, runtime.default_base_height)
             self._new_knockdown[agent] = self._knockdown[agent] & ~previous_knockdown
             self._out_of_bounds[agent] = self._rule_engine.out_of_bounds(root_pos, self.cfg.arena.radius)
+            if advance:
+                self._update_support_air_time(agent)
 
         for agent in FIGHTERS:
             opponent = opponent_of(agent)
@@ -700,6 +728,29 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._prev_root_lin_vel_w[agent] = self.root_lin_vel_w(agent).detach()
             self._prev_up_z[agent] = self._up_z[agent].detach()
             self._prev_support_bias[agent] = self._support_bias(agent).detach()
+
+    def _update_support_air_time(self, agent: str) -> None:
+        left, right = self._support_contact_sides(agent)
+        left_contact = left > 0.5
+        right_contact = right > 0.5
+        left_swing = torch.clamp(self._left_support_air_time[agent], 0.0, 0.60)
+        right_swing = torch.clamp(self._right_support_air_time[agent], 0.0, 0.60)
+        left_first_contact = left_contact & (left_swing > 0.08)
+        right_first_contact = right_contact & (right_swing > 0.08)
+        step_reward = left_first_contact.float() * torch.clamp(
+            (left_swing - 0.08) / 0.24, 0.0, 1.0
+        ) + right_first_contact.float() * torch.clamp((right_swing - 0.08) / 0.24, 0.0, 1.0)
+        self._support_step_reward[agent] = torch.clamp(step_reward, 0.0, 1.0)
+        self._left_support_air_time[agent] = torch.where(
+            left_contact,
+            torch.zeros_like(left_swing),
+            torch.clamp(left_swing + self.step_dt, 0.0, 0.80),
+        )
+        self._right_support_air_time[agent] = torch.where(
+            right_contact,
+            torch.zeros_like(right_swing),
+            torch.clamp(right_swing + self.step_dt, 0.0, 0.80),
+        )
 
     def _update_contact_and_effort(self, agent: str, opponent: str) -> None:
         root_pos = self.root_pos(agent)
@@ -1086,6 +1137,94 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         if posture_ids is None or posture_ids.numel() == 0:
             return torch.mean(torch.square(self._actions[agent]), dim=-1)
         return torch.mean(torch.square(self._actions[agent].index_select(1, posture_ids)), dim=-1)
+
+    def _selected_joint_abs_deviation(self, agent: str, joint_ids: torch.Tensor | None) -> torch.Tensor:
+        if joint_ids is None or joint_ids.numel() == 0:
+            return torch.zeros(self.num_envs, device=self.device)
+        return torch.mean(torch.abs(self.joint_pos_rel(agent).index_select(1, joint_ids)), dim=-1)
+
+    def _stand_still_joint_deviation(self, agent: str) -> torch.Tensor:
+        return self._selected_joint_abs_deviation(agent, self._posture_action_id_tensors.get(agent))
+
+    def _arm_motion_magnitude(self, agent: str) -> torch.Tensor:
+        arm_ids = self._arm_action_id_tensors.get(agent)
+        if arm_ids is None or arm_ids.numel() == 0:
+            return torch.zeros(self.num_envs, device=self.device)
+        arm_actions = torch.mean(torch.square(self._actions[agent].index_select(1, arm_ids)), dim=-1)
+        arm_deviation = self._selected_joint_abs_deviation(agent, arm_ids)
+        return arm_actions + 0.50 * arm_deviation
+
+    def _hip_yaw_roll_deviation(self, agent: str) -> torch.Tensor:
+        return self._selected_joint_abs_deviation(agent, self._hip_yaw_roll_action_id_tensors.get(agent))
+
+    def _support_contact_sides(self, agent: str) -> tuple[torch.Tensor, torch.Tensor]:
+        threshold = 0.05 * self.cfg.contact.force_normalizer
+        left = self._selected_body_contact_force(agent, self._left_support_body_id_tensors.get(agent)) > threshold
+        right = self._selected_body_contact_force(agent, self._right_support_body_id_tensors.get(agent)) > threshold
+        return left.float(), right.float()
+
+    def _side_support_clearance(self, agent: str, body_ids: torch.Tensor | None) -> torch.Tensor:
+        robot = self.robots[agent]
+        body_pos_w = getattr(robot.data, "body_pos_w", None)
+        if body_pos_w is None or body_ids is None or body_ids.numel() == 0:
+            return torch.zeros(self.num_envs, device=self.device)
+        height = body_pos_w.index_select(1, body_ids)[:, :, 2].amax(dim=-1)
+        return torch.clamp((height - 0.04) / 0.14, 0.0, 1.0)
+
+    def _both_feet_support(self, agent: str) -> torch.Tensor:
+        left, right = self._support_contact_sides(agent)
+        return left * right * self._stance_quality(agent)
+
+    def _single_stance_balance(self, agent: str) -> torch.Tensor:
+        left, right = self._support_contact_sides(agent)
+        single = torch.abs(left - right)
+        return single * self._stance_quality(agent) * self._capture_point_support_quality(agent)
+
+    def _feet_air_time_biped(self, agent: str) -> torch.Tensor:
+        left, right = self._support_contact_sides(agent)
+        left_clearance = self._side_support_clearance(agent, self._left_support_body_id_tensors.get(agent))
+        right_clearance = self._side_support_clearance(agent, self._right_support_body_id_tensors.get(agent))
+        single = torch.abs(left - right)
+        lifted_clearance = (1.0 - left) * left_clearance + (1.0 - right) * right_clearance
+        return torch.maximum(self._support_step_reward[agent], single * lifted_clearance * 0.35) * self._stance_quality(
+            agent
+        )
+
+    def _capture_point_support_quality(self, agent: str) -> torch.Tensor:
+        root_xy = self.root_pos_w(agent)[:, :2]
+        support_center = self._support_center_xy(agent)
+        support_radius = self._support_radius(agent)
+        omega = math.sqrt(9.81 / max(self._runtime[agent].default_base_height, 1.0e-6))
+        capture_point = root_xy + self.root_lin_vel_w(agent)[:, :2] / omega
+        capture_distance = torch.linalg.norm(capture_point - support_center, dim=-1)
+        return torch.exp(-torch.square(capture_distance / torch.clamp(support_radius + 0.18, min=0.18)))
+
+    def _desired_approach_speed(self, agent: str, opponent: str) -> torch.Tensor:
+        distance = torch.linalg.norm((self.root_pos(opponent) - self.root_pos(agent))[:, :2], dim=-1)
+        gate = self._standing_warmup_action_gate()
+        speed = 0.85 * torch.clamp((distance - 0.45) / 0.95, 0.0, 1.0)
+        return speed * gate
+
+    def _phase_features(self, agent: str, opponent: str) -> torch.Tensor:
+        episode_time = self.episode_length_buf.float() * self.step_dt
+        warmup_s = max(float(self.cfg.curriculum.standing_warmup_s), 1.0e-6)
+        warmup_progress = torch.clamp(episode_time / warmup_s, 0.0, 1.0)
+        left, right = self._support_contact_sides(agent)
+        return torch.stack(
+            (
+                torch.clamp(self._stance_quality(agent), 0.0, 1.0),
+                torch.clamp(self._combat_ready(agent), 0.0, 1.0),
+                self._standing_warmup_action_gate(),
+                torch.clamp(
+                    self._desired_approach_speed(agent, opponent) / self.cfg.contact.strike_speed_normalizer, 0.0, 1.0
+                ),
+                torch.clamp(self._support_quality(agent), 0.0, 1.0),
+                torch.abs(left - right),
+                torch.clamp(self._capture_point_support_quality(agent), 0.0, 1.0),
+                warmup_progress,
+            ),
+            dim=-1,
+        )
 
     def _knee_collapse(self, agent: str) -> torch.Tensor:
         knee_ids = self._knee_action_id_tensors.get(agent)
