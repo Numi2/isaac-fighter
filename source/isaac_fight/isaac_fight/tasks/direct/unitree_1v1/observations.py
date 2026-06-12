@@ -9,7 +9,7 @@ import torch
 
 from isaac_fight.utils.torch_math import heading_error_to_target, rotate_yaw_inverse
 
-BASE_FEATURE_DIM = 37
+BASE_FEATURE_DIM = 39
 OPPONENT_KEYPOINTS = 7
 KEYPOINT_FEATURE_DIM = OPPONENT_KEYPOINTS * 6
 
@@ -66,7 +66,11 @@ class CombatObservationBuilder:
                 env._knockdown_clock[opponent] / max(env.cfg.rules.knockout_grace_s, 1.0e-6),
                 env._out_of_bounds[agent].float(),
                 env._out_of_bounds[opponent].float(),
-                torch.clamp((env._eval_contact_force[agent] + env._proxy_engagement[agent]) / env.cfg.contact.force_normalizer, 0.0, 5.0),
+                torch.clamp(
+                    (env._eval_contact_force[agent] + env._proxy_engagement[agent]) / env.cfg.contact.force_normalizer,
+                    0.0,
+                    5.0,
+                ),
                 torch.clamp(env._useful_contact[agent], 0.0, 5.0),
                 torch.clamp(env._energy_ema[agent] / env.cfg.rewards.energy_normalizer, 0.0, 5.0),
                 torch.clamp(env._opponent_destabilization[agent], 0.0, 5.0),
@@ -76,12 +80,18 @@ class CombatObservationBuilder:
                 torch.clamp(env._topple_pressure[agent], 0.0, 5.0),
                 torch.clamp(env._drive_pressure[agent], 0.0, 5.0),
                 torch.clamp(env._support_break_pressure[agent], 0.0, 5.0),
+                torch.clamp(env._recent_attack_pressure[agent], 0.0, 5.0),
+                torch.clamp(env._recent_attack_pressure[opponent], 0.0, 5.0),
             ),
             dim=-1,
         )
 
         joint_pos_rel = env.joint_pos_rel(agent)
-        joint_vel = torch.clamp(env.joint_vel(agent) * self.cfg.joint_velocity_scale, -self.cfg.clip_joint_velocity, self.cfg.clip_joint_velocity)
+        joint_vel = torch.clamp(
+            env.joint_vel(agent) * self.cfg.joint_velocity_scale,
+            -self.cfg.clip_joint_velocity,
+            self.cfg.clip_joint_velocity,
+        )
         last_action = env._last_actions[agent]
         opponent_keypoints = env.opponent_keypoint_features(agent, opponent)
 

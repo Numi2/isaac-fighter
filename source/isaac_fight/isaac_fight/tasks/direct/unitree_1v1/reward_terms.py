@@ -28,7 +28,9 @@ class CombatRewardComputer:
         prev_distance = env._prev_distance_to_opponent[agent]
 
         up_z = env._up_z[agent]
-        upright = torch.clamp((up_z - env.cfg.rules.knockdown_up_axis_z) / (1.0 - env.cfg.rules.knockdown_up_axis_z), 0.0, 1.0)
+        upright = torch.clamp(
+            (up_z - env.cfg.rules.knockdown_up_axis_z) / (1.0 - env.cfg.rules.knockdown_up_axis_z), 0.0, 1.0
+        )
         lateral_ang_vel = torch.linalg.norm(env.root_ang_vel_b(agent)[:, :2], dim=-1)
         balance_recovery = upright * torch.exp(-0.20 * torch.square(lateral_ang_vel))
 
@@ -48,19 +50,21 @@ class CombatRewardComputer:
         topple_pressure = env._topple_pressure[agent] * upright
         drive_pressure = env._drive_pressure[agent] * upright
         support_break_pressure = env._support_break_pressure[agent] * upright
-        opp_destabilization = env._proof_destabilization[agent]
-        proof_impact = torch.clamp(env._proof_impact[agent], 0.0, 5.0)
-        proof = (env._proof_impact[agent] > 0.0).float()
+        recent_attack = torch.clamp(env._recent_attack_pressure[agent], 0.0, 5.0)
+        attack_credit = torch.maximum(torch.clamp(env._proof_impact[agent], 0.0, 5.0), recent_attack)
+        attack_gate = torch.clamp(attack_credit, 0.0, 1.0)
+        opp_destabilization = env._opponent_destabilization[agent] * attack_gate
+        proof = (attack_credit >= env.cfg.contact.fall_credit_min_attack).float()
         self_fall = env._fallen[agent].float()
         clean_attack = proof * upright * (1.0 - self_fall)
         opponent_fall = clean_attack * (env._new_fall[opponent].float() + 0.08 * env._fallen[opponent].float())
-        opponent_knockdown = clean_attack * (env._new_knockdown[opponent].float() + 0.15 * env._knockdown[opponent].float())
+        opponent_knockdown = clean_attack * (
+            env._new_knockdown[opponent].float() + 0.15 * env._knockdown[opponent].float()
+        )
         mutual_fall = self_fall * env._fallen[opponent].float()
-        impact_balance = proof_impact * balance_recovery * (1.0 - self_fall)
-        impact_self_destabilization = proof_impact * (
-            (1.0 - upright)
-            + 0.50 * torch.clamp(lateral_ang_vel / 4.0, 0.0, 2.0)
-            + self_fall
+        impact_balance = attack_credit * balance_recovery * (1.0 - self_fall)
+        impact_self_destabilization = attack_credit * (
+            (1.0 - upright) + 0.50 * torch.clamp(lateral_ang_vel / 4.0, 0.0, 2.0) + self_fall
         )
 
         energy = env._energy[agent]

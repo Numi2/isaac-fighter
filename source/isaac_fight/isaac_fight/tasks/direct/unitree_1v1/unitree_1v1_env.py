@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -167,7 +168,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             fighter_cfg = fighter_cfgs[agent]
             robot = self.robots[agent]
             spec = get_unitree_robot_spec(fighter_cfg.robot_name)
-            cfg_joint_names = get_controlled_joint_names_from_cfg_or_spec(fighter_cfg.robot_name, self._robot_cfgs.get(agent))
+            cfg_joint_names = get_controlled_joint_names_from_cfg_or_spec(
+                fighter_cfg.robot_name, self._robot_cfgs.get(agent)
+            )
             joint_names = list(fighter_cfg.controlled_joint_names or cfg_joint_names or spec.controlled_joint_names)
             joint_ids, resolved_names = robot.find_joints(joint_names)
             if len(joint_ids) != len(joint_names) and fighter_cfg.strict_joint_names:
@@ -255,6 +258,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._proof_contact = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._proof_impact = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._proof_destabilization = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._recent_attack_pressure = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._energy = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._energy_ema = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._torque_penalty = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
@@ -307,7 +311,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             raw = torch.nan_to_num(raw.to(self.device), nan=0.0, posinf=1.0, neginf=-1.0)
             raw = torch.clamp(raw, -1.0, 1.0)
             if raw.shape[-1] != self._runtime[agent].action_dim:
-                raise RuntimeError(f"{agent} action has shape {tuple(raw.shape)}, expected last dim {self._runtime[agent].action_dim}")
+                raise RuntimeError(
+                    f"{agent} action has shape {tuple(raw.shape)}, expected last dim {self._runtime[agent].action_dim}"
+                )
             self._last_actions[agent].copy_(self._actions[agent])
             smoothing = float(fighter_cfgs[agent].action_smoothing)
             self._actions[agent].mul_(smoothing).add_(raw * (1.0 - smoothing))
@@ -343,7 +349,6 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             breakdown = self._reward_computer.compute(self, agent, opponent)
             rewards[agent] = breakdown.total
             self._last_reward_terms[agent] = breakdown.terms
-            clean_opponent_fall = self._new_fall[opponent].float() * (self._proof_impact[agent] > 0.0).float() * (~self._fallen[agent]).float()
             mutual_fall = self._new_fall[agent].float() * self._fallen[opponent].float()
             combat_metrics = {
                 "combat_useful_contact": self._useful_contact[agent],
@@ -365,11 +370,15 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 "combat_proof_contact": self._proof_contact[agent],
                 "combat_proof_impact": self._proof_impact[agent],
                 "combat_proof_destabilization": self._proof_destabilization[agent],
+                "combat_recent_attack_pressure": self._recent_attack_pressure[agent],
                 "combat_opponent_fall_events": self._new_fall[opponent].float(),
-                "combat_proof_opponent_fall_events": self._new_fall[opponent].float() * (self._proof_impact[agent] > 0.0).float(),
-                "combat_clean_opponent_fall_events": clean_opponent_fall,
+                "combat_proof_opponent_fall_events": self._new_fall[opponent].float()
+                * (self._proof_impact[agent] > 0.0).float(),
+                "combat_clean_opponent_fall_events": self._clean_attack_credit(agent, opponent)
+                * self._new_fall[opponent].float(),
                 "combat_opponent_knockdown_events": self._new_knockdown[opponent].float(),
-                "combat_proof_opponent_knockdown_events": self._new_knockdown[opponent].float() * (self._proof_impact[agent] > 0.0).float(),
+                "combat_proof_opponent_knockdown_events": self._new_knockdown[opponent].float()
+                * (self._proof_impact[agent] > 0.0).float(),
                 "combat_self_fall_events": self._new_fall[agent].float(),
                 "combat_self_knockdown_events": self._new_knockdown[agent].float(),
                 "combat_mutual_fall_events": mutual_fall,
@@ -389,10 +398,10 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         if self.cfg.curriculum.enabled and self.cfg.curriculum.no_engagement_timeout_s > 0.0:
             no_engagement_timeout = self._no_engagement_clock >= self.cfg.curriculum.no_engagement_timeout_s
             self._time_out = self._time_out | no_engagement_timeout
-        knockout = {
-            agent: self._knockdown_clock[agent] >= self.cfg.rules.knockout_grace_s for agent in FIGHTERS
-        }
-        terminal_by_loss = knockout[FIGHTER_A] | knockout[FIGHTER_B] | self._out_of_bounds[FIGHTER_A] | self._out_of_bounds[FIGHTER_B]
+        knockout = {agent: self._knockdown_clock[agent] >= self.cfg.rules.knockout_grace_s for agent in FIGHTERS}
+        terminal_by_loss = (
+            knockout[FIGHTER_A] | knockout[FIGHTER_B] | self._out_of_bounds[FIGHTER_A] | self._out_of_bounds[FIGHTER_B]
+        )
         self._match_terminal = terminal_by_loss | self._time_out
         self._winner, self._loser, self._draw = self._rule_engine.assign_winner(
             terminal=self._match_terminal,
@@ -484,6 +493,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._proof_contact[agent][env_ids] = 0.0
             self._proof_impact[agent][env_ids] = 0.0
             self._proof_destabilization[agent][env_ids] = 0.0
+            self._recent_attack_pressure[agent][env_ids] = 0.0
             self._energy[agent][env_ids] = 0.0
             self._energy_ema[agent][env_ids] = 0.0
             self._score[agent][env_ids] = 0.0
@@ -522,13 +532,15 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._update_contact_and_effort(agent, opponent)
             if advance:
                 self._knockdown_clock[agent] = torch.where(
-                    self._knockdown[agent], self._knockdown_clock[agent] + self.step_dt, torch.zeros_like(self._knockdown_clock[agent])
+                    self._knockdown[agent],
+                    self._knockdown_clock[agent] + self.step_dt,
+                    torch.zeros_like(self._knockdown_clock[agent]),
                 )
                 self._fall_events[agent] += self._new_fall[agent].float()
                 self._knockdown_events[agent] += self._new_knockdown[agent].float()
-                self_standing = (~self._fallen[agent]).float()
-                opponent_fall_score = self._new_fall[opponent].float() * (self._proof_impact[agent] > 0.0).float() * self_standing
-                opponent_knockdown_score = self._new_knockdown[opponent].float() * self_standing
+                clean_attack = self._clean_attack_credit(agent, opponent)
+                opponent_fall_score = self._new_fall[opponent].float() * clean_attack
+                opponent_knockdown_score = self._new_knockdown[opponent].float() * clean_attack
                 mutual_fall_score = self._new_fall[agent].float() * self._fallen[opponent].float()
                 self._score[agent] += (
                     0.10 * self._attack_momentum[agent]
@@ -538,11 +550,15 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                     + 0.25 * self._drive_pressure[agent]
                     + 0.25 * self._support_break_pressure[agent]
                     + 0.30 * self._proof_destabilization[agent]
+                    + 0.20 * self._recent_attack_pressure[agent]
                     + 2.0 * opponent_fall_score
                     + 5.0 * opponent_knockdown_score
                     - 3.0 * self._new_fall[agent].float()
                     - 2.5 * mutual_fall_score
-                    + 0.002 * torch.clamp(1.0 - torch.linalg.norm(self.root_pos(agent)[:, :2], dim=-1) / self.cfg.arena.radius, 0.0, 1.0)
+                    + 0.002
+                    * torch.clamp(
+                        1.0 - torch.linalg.norm(self.root_pos(agent)[:, :2], dim=-1) / self.cfg.arena.radius, 0.0, 1.0
+                    )
                 )
         if advance:
             self._update_engagement_clock()
@@ -606,9 +622,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         close_to_opponent = (distance < self.cfg.contact.useful_contact_distance).float()
         self_stable_gate = (self._up_z[agent] > self.cfg.rules.fall_up_axis_z).float() * (~self._fallen[agent]).float()
         directed_gate = (
-            (closing_speed > -0.10)
-            | (destabilization_signal > 0.02)
-            | self._new_knockdown[opponent]
+            (closing_speed > -0.10) | (destabilization_signal > 0.02) | self._new_knockdown[opponent]
         ).float()
         attribution = close_to_opponent * self_stable_gate * directed_gate
         strike_speed_term = torch.clamp(strike_speed / self.cfg.contact.strike_speed_normalizer, 0.0, 5.0)
@@ -623,31 +637,59 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._training_contact_force[agent] = torch.maximum(real_opponent_force, proxy_engagement * proxy_gain)
         self._eval_contact_force[agent] = real_opponent_force
         force_term = torch.clamp(self._training_contact_force[agent] / self.cfg.contact.force_normalizer, 0.0, 5.0)
-        physical_contact_gate = (self._eval_contact_force[agent] > 0.08 * self.cfg.contact.force_normalizer).float()
-        destabilizing_impact = force_term * strike_speed_term * physical_contact_gate * (1.0 + torch.clamp(destabilization_signal, 0.0, 2.0))
+        physical_contact_gate = (
+            self._eval_contact_force[agent]
+            > self.cfg.contact.proof_contact_force_fraction * self.cfg.contact.force_normalizer
+        ).float()
+        proxy_contact_gate = (
+            (contact_proxy > self.cfg.contact.proxy_contact_min).float() * close_to_opponent * self_stable_gate
+        )
+        training_contact_gate = torch.maximum(physical_contact_gate, proxy_contact_gate)
+        physical_force_term = torch.clamp(self._eval_contact_force[agent] / self.cfg.contact.force_normalizer, 0.0, 5.0)
+        destabilizing_impact = (
+            force_term
+            * strike_speed_term
+            * training_contact_gate
+            * (1.0 + torch.clamp(destabilization_signal, 0.0, 2.0))
+        )
+        proof_destabilizing_impact = (
+            physical_force_term
+            * strike_speed_term
+            * physical_contact_gate
+            * (1.0 + torch.clamp(destabilization_signal, 0.0, 2.0))
+        )
         opp_lateral_ang_vel = torch.linalg.norm(self.root_ang_vel_b(opponent)[:, :2], dim=-1)
         opp_tilt = torch.relu(1.0 - self._up_z[opponent])
-        topple_pressure = force_term * physical_contact_gate * (
-            0.50 * torch.clamp(opp_lateral_ang_vel / 4.0, 0.0, 2.0)
-            + torch.clamp(opp_tilt / max(1.0 - self.cfg.rules.knockdown_up_axis_z, 1.0e-6), 0.0, 2.0)
+        topple_signal = 0.50 * torch.clamp(opp_lateral_ang_vel / 4.0, 0.0, 2.0) + torch.clamp(
+            opp_tilt / max(1.0 - self.cfg.rules.knockdown_up_axis_z, 1.0e-6), 0.0, 2.0
         )
+        topple_pressure = force_term * training_contact_gate * topple_signal
+        proof_topple_pressure = physical_force_term * physical_contact_gate * topple_signal
         opp_root_vel_xy = self.root_lin_vel_w(opponent)[:, :2]
         opp_velocity_delta_xy = opp_root_vel_xy - self._prev_root_lin_vel_w[opponent][:, :2]
         opp_drive_speed = torch.linalg.norm(opp_root_vel_xy, dim=-1)
         opp_drive_impulse = torch.linalg.norm(opp_velocity_delta_xy, dim=-1) / max(self.step_dt * 12.0, 1.0e-6)
-        drive_pressure = (
-            force_term
-            * strike_speed_term
-            * physical_contact_gate
-            * (0.25 * torch.clamp(opp_drive_speed / self.cfg.contact.strike_speed_normalizer, 0.0, 2.0) + 0.75 * torch.clamp(opp_drive_impulse, 0.0, 3.0))
-        )
-        support_break_pressure = self._support_break_pressure_term(opponent, force_term, physical_contact_gate)
-        training_contact_gate = torch.maximum(physical_contact_gate, (contact_proxy > 0.05).float() * close_to_opponent)
-        self._useful_contact[agent] = torch.clamp(
-            force_term,
+        drive_signal = 0.25 * torch.clamp(
+            opp_drive_speed / self.cfg.contact.strike_speed_normalizer, 0.0, 2.0
+        ) + 0.75 * torch.clamp(
+            opp_drive_impulse,
             0.0,
-            5.0,
-        ) * training_contact_gate
+            3.0,
+        )
+        drive_pressure = force_term * strike_speed_term * training_contact_gate * drive_signal
+        proof_drive_pressure = physical_force_term * strike_speed_term * physical_contact_gate * drive_signal
+        support_break_pressure = self._support_break_pressure_term(opponent, force_term, training_contact_gate)
+        proof_support_break_pressure = self._support_break_pressure_term(
+            opponent, physical_force_term, physical_contact_gate
+        )
+        self._useful_contact[agent] = (
+            torch.clamp(
+                force_term,
+                0.0,
+                5.0,
+            )
+            * training_contact_gate
+        )
 
         self._attack_momentum[agent] = attack_momentum
         self._strike_speed[agent] = strike_speed * attribution
@@ -656,24 +698,60 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._drive_pressure[agent] = drive_pressure
         self._support_break_pressure[agent] = support_break_pressure
         self._opponent_destabilization[agent] = destabilization_signal
-        self._proof_contact[agent] = torch.clamp(self._eval_contact_force[agent] / self.cfg.contact.force_normalizer, 0.0, 5.0) * physical_contact_gate
+        self._proof_contact[agent] = (
+            torch.clamp(self._eval_contact_force[agent] / self.cfg.contact.force_normalizer, 0.0, 5.0)
+            * physical_contact_gate
+        )
         self._proof_destabilization[agent] = self._opponent_destabilization[agent] * physical_contact_gate
         self._proof_impact[agent] = (
             self._proof_contact[agent]
-            + self._destabilizing_impact[agent]
-            + self._topple_pressure[agent]
-            + self._drive_pressure[agent]
-            + self._support_break_pressure[agent]
+            + proof_destabilizing_impact
+            + proof_topple_pressure
+            + proof_drive_pressure
+            + proof_support_break_pressure
             + self._proof_destabilization[agent]
             + self._new_knockdown[opponent].float() * physical_contact_gate
         )
+        self._update_recent_attack_pressure(agent, close_to_opponent, self_stable_gate)
         self._update_effort_penalties(agent)
 
         root_speed = torch.linalg.norm(self.root_lin_vel_w(agent)[:, :2], dim=-1)
         yaw_rate = torch.abs(self.root_ang_vel_b(agent)[:, 2])
-        self._inactivity[agent] = ((root_speed < 0.05) & (distance > 0.90) & (self._useful_contact[agent] < 0.05)).float()
+        self._inactivity[agent] = (
+            (root_speed < 0.05) & (distance > 0.90) & (self._useful_contact[agent] < 0.05)
+        ).float()
         self._spin_without_contact[agent] = torch.relu(yaw_rate - 2.0) * (self._useful_contact[agent] < 0.05).float()
-        self._uncontrolled_collision[agent] = self._useful_contact[agent] * (1.0 - torch.clamp(self._up_z[agent], 0.0, 1.0))
+        self._uncontrolled_collision[agent] = self._useful_contact[agent] * (
+            1.0 - torch.clamp(self._up_z[agent], 0.0, 1.0)
+        )
+
+    def _update_recent_attack_pressure(
+        self,
+        agent: str,
+        close_to_opponent: torch.Tensor,
+        self_stable_gate: torch.Tensor,
+    ) -> None:
+        current = torch.maximum(
+            self._proof_impact[agent],
+            torch.maximum(
+                self._useful_contact[agent],
+                torch.maximum(self._attack_momentum[agent], self._drive_pressure[agent]),
+            ),
+        )
+        current = torch.clamp(current, 0.0, 5.0) * close_to_opponent * self_stable_gate
+        memory_s = float(self.cfg.contact.attack_memory_s)
+        if memory_s <= 0.0:
+            self._recent_attack_pressure[agent] = current
+            return
+        decay = math.exp(-float(self.step_dt) / max(memory_s, 1.0e-6))
+        self._recent_attack_pressure[agent] = torch.maximum(self._recent_attack_pressure[agent] * decay, current)
+
+    def _clean_attack_credit(self, agent: str, opponent: str) -> torch.Tensor:
+        attack = torch.maximum(self._proof_impact[agent], self._recent_attack_pressure[agent])
+        enough_attack = (attack >= self.cfg.contact.fall_credit_min_attack).float()
+        stable = (~self._fallen[agent]).float() * (self._up_z[agent] > self.cfg.rules.fall_up_axis_z).float()
+        not_mutual_crash = 1.0 - (self._new_fall[agent] & self._fallen[opponent]).float()
+        return enough_attack * stable * not_mutual_crash
 
     def _effective_proxy_gain(self) -> float:
         base = float(self.cfg.contact.robot_contact_proxy_gain)
@@ -700,7 +778,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._energy[agent] = torch.mean(power, dim=-1)
             self._torque_penalty[agent] = torch.mean(torch.square(torque / 120.0), dim=-1)
         else:
-            self._energy[agent] = torch.mean(torch.square(self._actions[agent]), dim=-1) * self.cfg.rewards.energy_normalizer
+            self._energy[agent] = (
+                torch.mean(torch.square(self._actions[agent]), dim=-1) * self.cfg.rewards.energy_normalizer
+            )
             self._torque_penalty[agent] = torch.mean(torch.square(self._actions[agent]), dim=-1)
         self._energy_ema[agent].mul_(0.95).add_(0.05 * self._energy[agent])
         self._jitter_penalty[agent] = torch.mean(torch.square(self._actions[agent] - self._last_actions[agent]), dim=-1)
@@ -728,7 +808,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         rel_body_vel = body_vel - self.root_lin_vel_w(opponent).unsqueeze(1)
         return torch.relu(torch.sum(rel_body_vel * rel_dir.unsqueeze(1), dim=-1)).amax(dim=-1)
 
-    def _net_contact_force(self, agent: str, include_lower_body_contacts: torch.Tensor | bool | None = None) -> torch.Tensor:
+    def _net_contact_force(
+        self, agent: str, include_lower_body_contacts: torch.Tensor | bool | None = None
+    ) -> torch.Tensor:
         sensor_names = (f"contact_{agent}", agent, f"{agent}_contact")
         for name in sensor_names:
             sensor = self.scene.sensors.get(name) if hasattr(self.scene, "sensors") else None
@@ -813,6 +895,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             "proof_contact": 0.0,
             "proof_impact": 0.0,
             "proof_destabilization": 0.0,
+            "recent_attack_pressure": 0.0,
             "opponent_fall_events": 0.0,
             "proof_opponent_fall_events": 0.0,
             "clean_opponent_fall_events": 0.0,
@@ -854,20 +937,31 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                     "Match/knockdowns": float(self._knockdown_events[agent][env_ids].sum().item()),
                     "Match/self_falls": float(self._fall_events[agent][env_ids].sum().item()),
                     "Match/out_of_bounds_losses": float(self._out_of_bounds[agent][env_ids].float().sum().item()),
-                    "Match/avg_candidate_body_contact_force": float(self._candidate_body_contact_force[agent][env_ids].mean().item()),
-                    "Match/avg_opponent_contact_attribution": float(self._opponent_contact_attribution[agent][env_ids].mean().item()),
-                    "Match/avg_real_opponent_contact_force": float(self._real_opponent_contact_force[agent][env_ids].mean().item()),
+                    "Match/avg_candidate_body_contact_force": float(
+                        self._candidate_body_contact_force[agent][env_ids].mean().item()
+                    ),
+                    "Match/avg_opponent_contact_attribution": float(
+                        self._opponent_contact_attribution[agent][env_ids].mean().item()
+                    ),
+                    "Match/avg_real_opponent_contact_force": float(
+                        self._real_opponent_contact_force[agent][env_ids].mean().item()
+                    ),
                     "Match/avg_ground_contact_force": float(self._ground_contact_force[agent][env_ids].mean().item()),
                     "Match/avg_proxy_engagement": float(self._proxy_engagement[agent][env_ids].mean().item()),
-                    "Match/avg_training_contact_force": float(self._training_contact_force[agent][env_ids].mean().item()),
+                    "Match/avg_training_contact_force": float(
+                        self._training_contact_force[agent][env_ids].mean().item()
+                    ),
                     "Match/avg_eval_contact_force": float(self._eval_contact_force[agent][env_ids].mean().item()),
                     "Match/avg_attack_momentum": float(self._attack_momentum[agent][env_ids].mean().item()),
                     "Match/avg_strike_speed": float(self._strike_speed[agent][env_ids].mean().item()),
                     "Match/avg_destabilizing_impact": float(self._destabilizing_impact[agent][env_ids].mean().item()),
                     "Match/avg_topple_pressure": float(self._topple_pressure[agent][env_ids].mean().item()),
                     "Match/avg_drive_pressure": float(self._drive_pressure[agent][env_ids].mean().item()),
-                    "Match/avg_support_break_pressure": float(self._support_break_pressure[agent][env_ids].mean().item()),
+                    "Match/avg_support_break_pressure": float(
+                        self._support_break_pressure[agent][env_ids].mean().item()
+                    ),
                     "Match/proof_impact": float(self._proof_impact[agent][env_ids].mean().item()),
+                    "Match/recent_attack_pressure": float(self._recent_attack_pressure[agent][env_ids].mean().item()),
                     "Match/avg_energy_use": float(self._energy_ema[agent][env_ids].mean().item()),
                     "Match/score": score,
                     "Match/policy_version": 0.0,
@@ -903,9 +997,15 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 "root_quat": [float(x) for x in self.root_quat(agent)[idx].detach().cpu().tolist()],
                 "action": [float(x) for x in self._actions[agent][idx].detach().cpu().tolist()],
                 "reward": float(rewards[agent][idx].detach().cpu().item()),
-                "candidate_body_contact_force": float(self._candidate_body_contact_force[agent][idx].detach().cpu().item()),
-                "opponent_contact_attribution": float(self._opponent_contact_attribution[agent][idx].detach().cpu().item()),
-                "real_opponent_contact_force": float(self._real_opponent_contact_force[agent][idx].detach().cpu().item()),
+                "candidate_body_contact_force": float(
+                    self._candidate_body_contact_force[agent][idx].detach().cpu().item()
+                ),
+                "opponent_contact_attribution": float(
+                    self._opponent_contact_attribution[agent][idx].detach().cpu().item()
+                ),
+                "real_opponent_contact_force": float(
+                    self._real_opponent_contact_force[agent][idx].detach().cpu().item()
+                ),
                 "ground_contact_force": float(self._ground_contact_force[agent][idx].detach().cpu().item()),
                 "proxy_engagement": float(self._proxy_engagement[agent][idx].detach().cpu().item()),
                 "training_contact_force": float(self._training_contact_force[agent][idx].detach().cpu().item()),
@@ -918,6 +1018,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 "support_break_pressure": float(self._support_break_pressure[agent][idx].detach().cpu().item()),
                 "proof_contact": float(self._proof_contact[agent][idx].detach().cpu().item()),
                 "proof_impact": float(self._proof_impact[agent][idx].detach().cpu().item()),
+                "recent_attack_pressure": float(self._recent_attack_pressure[agent][idx].detach().cpu().item()),
                 "fall": bool(self._fallen[agent][idx].detach().cpu().item()),
                 "knockdown": bool(self._knockdown[agent][idx].detach().cpu().item()),
                 "out_of_bounds": bool(self._out_of_bounds[agent][idx].detach().cpu().item()),

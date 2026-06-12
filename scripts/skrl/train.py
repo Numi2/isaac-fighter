@@ -27,9 +27,19 @@ parser.add_argument("--seed", type=int, default=None)
 parser.add_argument("--checkpoint", type=str, default=None)
 parser.add_argument("--max_iterations", type=int, default=None)
 parser.add_argument("--ml_framework", type=str, default="torch", choices=["torch", "jax", "jax-numpy"])
-parser.add_argument("--self_play", action="store_true", default=True, help="Track policy versions and train against frozen pool opponents.")
+parser.add_argument(
+    "--self_play",
+    action="store_true",
+    default=True,
+    help="Track policy versions and train against frozen pool opponents.",
+)
 parser.add_argument("--no_self_play", action="store_false", dest="self_play")
-parser.add_argument("--historical_opponent", action="store_true", default=True, help="Freeze opponent actions from sampled skrl/TorchScript pool policies.")
+parser.add_argument(
+    "--historical_opponent",
+    action="store_true",
+    default=True,
+    help="Freeze opponent actions from sampled skrl/TorchScript pool policies.",
+)
 parser.add_argument("--no_historical_opponent", action="store_false", dest="historical_opponent")
 parser.add_argument("--active_agent", type=str, default="fighter_a", choices=["fighter_a", "fighter_b"])
 parser.add_argument("--pool_dir", type=str, default="policy_pool")
@@ -38,7 +48,12 @@ parser.add_argument("--pool_sync_interval_s", type=float, default=60.0)
 parser.add_argument("--opponent_update_interval", type=int, default=None)
 parser.add_argument("--side_swap_probability", type=float, default=None)
 parser.add_argument("--live_self_play_fraction", type=float, default=None)
-parser.add_argument("--launch_preset", type=str, default="fast_contact_bootstrap", choices=["fast_contact_bootstrap", "full_fight_self_play"])
+parser.add_argument(
+    "--launch_preset",
+    type=str,
+    default="fast_contact_bootstrap",
+    choices=["fast_contact_bootstrap", "full_fight_self_play"],
+)
 parser.add_argument("--export_io_descriptors", action="store_true", default=False)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -66,7 +81,13 @@ if args_cli.ml_framework.startswith("torch"):
 elif args_cli.ml_framework.startswith("jax"):
     from skrl.utils.runner.jax import Runner
 
-from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg, DirectRLEnvCfg, ManagerBasedRLEnvCfg, multi_agent_to_single_agent
+from isaaclab.envs import (
+    DirectMARLEnv,
+    DirectMARLEnvCfg,
+    DirectRLEnvCfg,
+    ManagerBasedRLEnvCfg,
+    multi_agent_to_single_agent,
+)
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_yaml
@@ -104,29 +125,34 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.fighter_a.robot_name = "g1_29dof"
         env_cfg.fighter_b.robot_name = "g1_29dof"
         refresh_spaces = True
-        env_cfg.episode_length_s = 10.0
-        env_cfg.arena.radius = 2.0
-        env_cfg.fighter_a.spawn_xy = (-0.75, -0.14)
-        env_cfg.fighter_b.spawn_xy = (0.75, 0.14)
-        env_cfg.fighter_a.spawn_yaw = 0.14
-        env_cfg.fighter_b.spawn_yaw = math.pi + 0.14
-        env_cfg.fighter_a.spawn_xy_noise = 0.10
-        env_cfg.fighter_b.spawn_xy_noise = 0.10
-        env_cfg.fighter_a.spawn_yaw_noise = 0.16
-        env_cfg.fighter_b.spawn_yaw_noise = 0.16
-        env_cfg.fighter_a.spawn_forward_speed = 1.05
-        env_cfg.fighter_b.spawn_forward_speed = 1.05
-        env_cfg.fighter_a.spawn_forward_speed_noise = 0.25
-        env_cfg.fighter_b.spawn_forward_speed_noise = 0.25
-        env_cfg.fighter_a.action_scale = 0.40
-        env_cfg.fighter_b.action_scale = 0.40
-        env_cfg.fighter_a.action_smoothing = 0.22
-        env_cfg.fighter_b.action_smoothing = 0.22
-        env_cfg.contact.useful_contact_distance = 1.75
+        env_cfg.episode_length_s = 8.0
+        env_cfg.arena.radius = 1.85
+        env_cfg.rules.knockout_grace_s = 0.75
+        env_cfg.fighter_a.spawn_xy = (-0.58, -0.10)
+        env_cfg.fighter_b.spawn_xy = (0.58, 0.10)
+        env_cfg.fighter_a.spawn_yaw = 0.08
+        env_cfg.fighter_b.spawn_yaw = math.pi + 0.08
+        env_cfg.fighter_a.spawn_xy_noise = 0.07
+        env_cfg.fighter_b.spawn_xy_noise = 0.07
+        env_cfg.fighter_a.spawn_yaw_noise = 0.12
+        env_cfg.fighter_b.spawn_yaw_noise = 0.12
+        env_cfg.fighter_a.spawn_forward_speed = 1.30
+        env_cfg.fighter_b.spawn_forward_speed = 1.30
+        env_cfg.fighter_a.spawn_forward_speed_noise = 0.20
+        env_cfg.fighter_b.spawn_forward_speed_noise = 0.20
+        env_cfg.fighter_a.action_scale = 0.45
+        env_cfg.fighter_b.action_scale = 0.45
+        env_cfg.fighter_a.action_smoothing = 0.15
+        env_cfg.fighter_b.action_smoothing = 0.15
+        env_cfg.contact.useful_contact_distance = 1.55
+        env_cfg.contact.attack_memory_s = 0.80
+        env_cfg.contact.fall_credit_min_attack = 0.10
         env_cfg.curriculum.enabled = True
-        env_cfg.curriculum.no_engagement_timeout_s = 4.0
-        env_cfg.curriculum.no_engagement_grace_s = 1.5
+        env_cfg.curriculum.no_engagement_timeout_s = 2.4
+        env_cfg.curriculum.no_engagement_grace_s = 0.8
+        env_cfg.curriculum.proxy_gain_anneal_steps = min(int(env_cfg.curriculum.proxy_gain_anneal_steps), 35_000)
         env_cfg.self_play.opponent_update_interval = min(int(env_cfg.self_play.opponent_update_interval), 250)
+        env_cfg.self_play.live_self_play_fraction = max(float(env_cfg.self_play.live_self_play_fraction), 0.35)
         agent_cfg["agent"]["rollouts"] = max(int(agent_cfg["agent"]["rollouts"]), 32)
     elif preset == "full_fight_self_play":
         env_cfg.episode_length_s = 30.0
@@ -177,7 +203,9 @@ def _adapt_checkpoint_observation_space(path: str, env_cfg, algorithm_name: str,
 def _expand_model_input(state_dict, target_dim: int) -> bool:  # noqa: ANN001
     if not isinstance(state_dict, dict):
         return False
-    weight_keys = sorted(k for k, value in state_dict.items() if k.endswith(".weight") and hasattr(value, "ndim") and value.ndim == 2)
+    weight_keys = sorted(
+        k for k, value in state_dict.items() if k.endswith(".weight") and hasattr(value, "ndim") and value.ndim == 2
+    )
     for key in weight_keys:
         weight = state_dict[key]
         current = int(weight.shape[1])
@@ -252,7 +280,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "algorithm": algorithm.upper(),
             "task": args_cli.task,
             "seed": args_cli.seed,
-            "reward_version": "combat_flywheel_v2",
+            "reward_version": "combat_flywheel_v3",
             "config_hash": hashlib.sha256(
                 json.dumps(
                     {
@@ -350,7 +378,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     print(f"[INFO] Training time: {time.time() - start:.2f} s")
 
     if args_cli.self_play:
-        print(f"[INFO] Self-play pool synchronized. Added {final_sync_added} checkpoint(s) to {Path(args_cli.pool_dir).resolve()}")
+        print(
+            f"[INFO] Self-play pool synchronized. Added {final_sync_added} checkpoint(s) to {Path(args_cli.pool_dir).resolve()}"
+        )
 
     env.close()
 

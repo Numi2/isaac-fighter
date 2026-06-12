@@ -63,7 +63,7 @@ class RuleCfg:
     fall_up_axis_z: float = 0.35
     knockdown_height_ratio: float = 0.55
     knockdown_up_axis_z: float = 0.50
-    knockout_grace_s: float = 1.25
+    knockout_grace_s: float = 0.85
     timer_decision_margin: float = 2.0
     simultaneous_loss_is_draw: bool = True
 
@@ -77,6 +77,10 @@ class ContactCfg:
     useful_contact_distance: float = 1.25
     useful_contact_min_closing_speed: float = 0.0
     robot_contact_proxy_gain: float = 0.85
+    proof_contact_force_fraction: float = 0.04
+    proxy_contact_min: float = 0.04
+    attack_memory_s: float = 0.75
+    fall_credit_min_attack: float = 0.12
     destabilization_height_drop_scale: float = 3.0
     destabilization_tilt_gain: float = 1.75
 
@@ -188,11 +192,15 @@ class GhostFighterUnitree1v1EnvCfg(DirectMARLEnvCfg):
     decimation: int = 4
     episode_length_s: float = 10.0
     possible_agents: list[str] = [FIGHTER_A, FIGHTER_B]
-    state_space: int = observation_dim(get_unitree_robot_spec("g1_29dof").action_dim) + observation_dim(get_unitree_robot_spec("h1").action_dim)
+    state_space: int = observation_dim(get_unitree_robot_spec("g1_29dof").action_dim) + observation_dim(
+        get_unitree_robot_spec("h1").action_dim
+    )
 
-    # default robots: G1 main fighter, H1 larger opponent
+    # default robots: symmetric G1 self-play bootstraps emergent fighting fastest.
     fighter_a: FighterCfg = FighterCfg(robot_name="g1_29dof", spawn_xy=(-0.45, 0.0), spawn_yaw=0.0, spawn_xy_noise=0.08)
-    fighter_b: FighterCfg = FighterCfg(robot_name="h1", spawn_xy=(0.45, 0.0), spawn_yaw=math.pi, spawn_xy_noise=0.08)
+    fighter_b: FighterCfg = FighterCfg(
+        robot_name="g1_29dof", spawn_xy=(0.45, 0.0), spawn_yaw=math.pi, spawn_xy_noise=0.08
+    )
 
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=0.005, render_interval=decimation)
@@ -211,11 +219,11 @@ class GhostFighterUnitree1v1EnvCfg(DirectMARLEnvCfg):
     # Spaces are refreshed in __post_init__ from the selected robot specs.
     action_spaces: dict[str, int] = {
         FIGHTER_A: get_unitree_robot_spec("g1_29dof").action_dim,
-        FIGHTER_B: get_unitree_robot_spec("h1").action_dim,
+        FIGHTER_B: get_unitree_robot_spec("g1_29dof").action_dim,
     }
     observation_spaces: dict[str, int] = {
         FIGHTER_A: observation_dim(get_unitree_robot_spec("g1_29dof").action_dim),
-        FIGHTER_B: observation_dim(get_unitree_robot_spec("h1").action_dim),
+        FIGHTER_B: observation_dim(get_unitree_robot_spec("g1_29dof").action_dim),
     }
 
     def __post_init__(self):
