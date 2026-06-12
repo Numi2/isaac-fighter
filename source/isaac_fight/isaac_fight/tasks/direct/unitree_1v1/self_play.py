@@ -157,6 +157,7 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         elo_window: float = 250.0,
         weakness_bias: float = 0.65,
         latest_bias: float = 0.15,
+        update_interval_steps: int = 1000,
         train_active_only: bool = True,
     ):
         super().__init__(env)
@@ -168,10 +169,12 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         self.elo_window = elo_window
         self.weakness_bias = weakness_bias
         self.latest_bias = latest_bias
+        self.update_interval_steps = max(1, int(update_interval_steps))
         self.train_active_only = train_active_only
         self._last_obs: dict[str, torch.Tensor] | None = None
         self._current_sample: OpponentSample | None = None
         self._backend: PolicyBackend | None = None
+        self._step_count = 0
 
     def reset(self, **kwargs):  # noqa: ANN003
         obs, info = self.env.reset(**kwargs)
@@ -180,6 +183,9 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         return obs, info
 
     def step(self, actions):  # noqa: ANN001
+        self._step_count += 1
+        if self._step_count % self.update_interval_steps == 0:
+            self._sample_backend()
         if self._backend is not None and self._last_obs is not None and self.opponent_agent in self._last_obs:
             actions = dict(actions)
             actions[self.opponent_agent] = self._backend.act(self._last_obs[self.opponent_agent])
@@ -256,6 +262,7 @@ def maybe_wrap_historical_opponent(env: gym.Env, cfg, log_dir: str | Path | None
         elo_window=cfg.self_play.elo_window,
         weakness_bias=cfg.self_play.weakness_bias,
         latest_bias=cfg.self_play.latest_bias,
+        update_interval_steps=getattr(cfg.self_play, "opponent_update_interval", 1000),
         train_active_only=True,
     )
 

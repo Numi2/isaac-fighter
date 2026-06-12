@@ -135,7 +135,7 @@ class SelfPlayCfg:
     active_agent: str = FIGHTER_A
     pool_dir: str = "policy_pool"
     snapshot_interval: int = 50
-    opponent_update_interval: int = 10
+    opponent_update_interval: int = 1000
     elo_window: float = 250.0
     weakness_bias: float = 0.65
     latest_bias: float = 0.15
