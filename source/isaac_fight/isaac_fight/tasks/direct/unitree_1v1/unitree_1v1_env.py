@@ -79,9 +79,14 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._keypoint_body_names: dict[str, list[str]] = {}
         self._support_body_ids: dict[str, list[int]] = {}
         self._support_body_id_tensors: dict[str, torch.Tensor] = {}
+        self._left_support_body_id_tensors: dict[str, torch.Tensor] = {}
+        self._right_support_body_id_tensors: dict[str, torch.Tensor] = {}
         self._upper_contact_body_id_tensors: dict[str, torch.Tensor] = {}
         self._strike_body_id_tensors: dict[str, torch.Tensor] = {}
+        self._torso_contact_body_id_tensors: dict[str, torch.Tensor] = {}
         self._waist_action_id_tensors: dict[str, torch.Tensor] = {}
+        self._leg_action_id_tensors: dict[str, torch.Tensor] = {}
+        self._knee_action_id_tensors: dict[str, torch.Tensor] = {}
         self._action_scale_tensors: dict[str, torch.Tensor] = {}
         self._resolve_controlled_joints()
         self._allocate_buffers()
@@ -206,6 +211,14 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._waist_action_id_tensors[agent] = torch.as_tensor(
                 waist_action_ids, dtype=torch.long, device=self.device
             )
+            leg_action_ids = [
+                idx
+                for idx, name in enumerate(resolved_names)
+                if any(token in name.lower() for token in ("hip", "knee", "ankle"))
+            ]
+            knee_action_ids = [idx for idx, name in enumerate(resolved_names) if "knee" in name.lower()]
+            self._leg_action_id_tensors[agent] = torch.as_tensor(leg_action_ids, dtype=torch.long, device=self.device)
+            self._knee_action_id_tensors[agent] = torch.as_tensor(knee_action_ids, dtype=torch.long, device=self.device)
             self._resolve_keypoint_bodies(agent)
             self._resolve_support_bodies(agent)
 
@@ -229,21 +242,40 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
     def _resolve_support_bodies(self, agent: str) -> None:
         body_names = tuple(getattr(self.robots[agent], "body_names", ()) or ())
         support_ids: list[int] = []
+        left_support_ids: list[int] = []
+        right_support_ids: list[int] = []
         upper_contact_ids: list[int] = []
         strike_ids: list[int] = []
+        torso_contact_ids: list[int] = []
         for body_id, body_name in enumerate(body_names):
             lower_name = body_name.lower()
             is_support = any(token in lower_name for token in SUPPORT_BODY_TOKENS)
             if is_support:
                 support_ids.append(body_id)
+                if "left" in lower_name:
+                    left_support_ids.append(body_id)
+                if "right" in lower_name:
+                    right_support_ids.append(body_id)
             else:
                 upper_contact_ids.append(body_id)
             if any(token in lower_name for token in STRIKE_BODY_TOKENS):
                 strike_ids.append(body_id)
+            if any(token in lower_name for token in ("pelvis", "base", "torso", "waist", "trunk", "chest")):
+                torso_contact_ids.append(body_id)
 
         all_ids = list(range(len(body_names)))
         self._support_body_ids[agent] = support_ids
         self._support_body_id_tensors[agent] = torch.as_tensor(support_ids, dtype=torch.long, device=self.device)
+        self._left_support_body_id_tensors[agent] = torch.as_tensor(
+            left_support_ids or support_ids,
+            dtype=torch.long,
+            device=self.device,
+        )
+        self._right_support_body_id_tensors[agent] = torch.as_tensor(
+            right_support_ids or support_ids,
+            dtype=torch.long,
+            device=self.device,
+        )
         self._upper_contact_body_id_tensors[agent] = torch.as_tensor(
             upper_contact_ids or all_ids,
             dtype=torch.long,
@@ -251,6 +283,11 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         )
         self._strike_body_id_tensors[agent] = torch.as_tensor(
             strike_ids or all_ids, dtype=torch.long, device=self.device
+        )
+        self._torso_contact_body_id_tensors[agent] = torch.as_tensor(
+            torso_contact_ids or upper_contact_ids or all_ids,
+            dtype=torch.long,
+            device=self.device,
         )
 
     def _allocate_buffers(self) -> None:
@@ -304,6 +341,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._prev_root_height = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._prev_root_lin_vel_w = {agent: torch.zeros(n, 3, device=device) for agent in FIGHTERS}
         self._prev_up_z = {agent: torch.ones(n, device=device) for agent in FIGHTERS}
+        self._prev_support_bias = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._no_engagement_clock = torch.zeros(n, device=device)
 
         self._winner = torch.zeros(n, dtype=torch.long, device=device)
@@ -415,23 +453,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         opponent_fall = self._new_fall[opponent].float()
         opponent_knockdown = self._new_knockdown[opponent].float()
         proof_gate = (self._proof_impact[agent] > 0.0).float()
-        return {
+        episode_terms = {
             "total_reward": breakdown.total,
-            "locomotion_drive": reward_terms["locomotion_drive"],
-            "useful_contact": reward_terms["useful_contact"],
-            "destabilizing_impact": reward_terms["destabilizing_impact"],
-            "topple_pressure": reward_terms["topple_pressure"],
-            "drive_pressure": reward_terms["drive_pressure"],
-            "support_break_pressure": reward_terms["support_break_pressure"],
-            "opponent_fall": reward_terms["opponent_fall"],
-            "opponent_knockdown": reward_terms["opponent_knockdown"],
-            "opponent_destabilization": reward_terms["opponent_destabilization"],
-            "impact_self_destabilization": reward_terms["impact_self_destabilization"],
-            "posture_instability": reward_terms["posture_instability"],
-            "mutual_fall": reward_terms["mutual_fall"],
-            "self_fall": reward_terms["self_fall"],
-            "final_win": reward_terms["final_win"],
-            "final_loss": reward_terms["final_loss"],
+            **reward_terms,
             "combat_useful_contact": self._useful_contact[agent],
             "combat_locomotion_drive": self._locomotion_drive[agent],
             "combat_attack_momentum": self._attack_momentum[agent],
@@ -452,6 +476,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             "combat_self_fall_events": self._new_fall[agent].float(),
             "combat_mutual_fall_events": self._new_fall[agent].float() * self._fallen[opponent].float(),
         }
+        return episode_terms
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         self._refresh_combat_features(advance=True)
@@ -566,6 +591,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._prev_root_height[agent][env_ids] = self.root_pos(agent)[env_ids, 2].detach()
             self._prev_root_lin_vel_w[agent][env_ids] = self.root_lin_vel_w(agent)[env_ids].detach()
             self._prev_up_z[agent][env_ids] = self._rule_engine.up_axis_z(self.root_quat(agent))[env_ids].detach()
+            self._prev_support_bias[agent][env_ids] = self._support_bias(agent)[env_ids].detach()
             for tensor in self._episode_sums[agent].values():
                 tensor[env_ids] = 0.0
             self._episode_counts[agent][env_ids] = 0.0
@@ -658,6 +684,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._prev_root_height[agent] = self.root_pos(agent)[:, 2].detach()
             self._prev_root_lin_vel_w[agent] = self.root_lin_vel_w(agent).detach()
             self._prev_up_z[agent] = self._up_z[agent].detach()
+            self._prev_support_bias[agent] = self._support_bias(agent).detach()
 
     def _update_contact_and_effort(self, agent: str, opponent: str) -> None:
         root_pos = self.root_pos(agent)
@@ -956,6 +983,91 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
     def _support_quality(self, agent: str) -> torch.Tensor:
         support_force = self._support_contact_force(agent)
         return torch.clamp(support_force / self.cfg.contact.force_normalizer, 0.0, 1.0)
+
+    def _support_body_state_w(self, agent: str) -> tuple[torch.Tensor, torch.Tensor]:
+        robot = self.robots[agent]
+        support_ids = self._support_body_id_tensors.get(agent)
+        body_pos_w = getattr(robot.data, "body_pos_w", None)
+        body_vel_w = getattr(robot.data, "body_lin_vel_w", None)
+        if body_pos_w is None or support_ids is None or support_ids.numel() == 0:
+            pos = self.root_pos_w(agent).unsqueeze(1)
+            vel = self.root_lin_vel_w(agent).unsqueeze(1)
+            return pos, vel
+        pos = body_pos_w.index_select(1, support_ids)
+        if body_vel_w is None:
+            vel = self.root_lin_vel_w(agent).unsqueeze(1).expand_as(pos)
+        else:
+            vel = body_vel_w.index_select(1, support_ids)
+        return pos, vel
+
+    def _support_center_xy(self, agent: str) -> torch.Tensor:
+        pos, _ = self._support_body_state_w(agent)
+        return pos[:, :, :2].mean(dim=1)
+
+    def _support_radius(self, agent: str) -> torch.Tensor:
+        pos, _ = self._support_body_state_w(agent)
+        xy = pos[:, :, :2]
+        center = xy.mean(dim=1, keepdim=True)
+        return torch.clamp(torch.linalg.norm(xy - center, dim=-1).amax(dim=-1), min=0.10)
+
+    def _support_mean_speed(self, agent: str) -> torch.Tensor:
+        _, vel = self._support_body_state_w(agent)
+        return torch.linalg.norm(vel[:, :, :2], dim=-1).mean(dim=-1)
+
+    def _support_clearance(self, agent: str) -> torch.Tensor:
+        pos, _ = self._support_body_state_w(agent)
+        return torch.clamp((pos[:, :, 2].amax(dim=-1) - 0.04) / 0.14, 0.0, 1.0)
+
+    def _support_stance_width(self, agent: str) -> torch.Tensor:
+        robot = self.robots[agent]
+        body_pos_w = getattr(robot.data, "body_pos_w", None)
+        left_ids = self._left_support_body_id_tensors.get(agent)
+        right_ids = self._right_support_body_id_tensors.get(agent)
+        if (
+            body_pos_w is None
+            or left_ids is None
+            or right_ids is None
+            or left_ids.numel() == 0
+            or right_ids.numel() == 0
+        ):
+            return 2.0 * self._support_radius(agent)
+        left = body_pos_w.index_select(1, left_ids)[:, :, :2].mean(dim=1)
+        right = body_pos_w.index_select(1, right_ids)[:, :, :2].mean(dim=1)
+        return torch.linalg.norm(left - right, dim=-1)
+
+    def _selected_body_contact_force(self, agent: str, body_ids: torch.Tensor | None) -> torch.Tensor:
+        body_forces = getattr(self.robots[agent].data, "body_net_forces_w", None)
+        if body_forces is None or body_ids is None or body_ids.numel() == 0:
+            return torch.zeros(self.num_envs, device=self.device)
+        return torch.linalg.norm(body_forces.index_select(1, body_ids), dim=-1).amax(dim=-1)
+
+    def _non_support_contact_force(self, agent: str) -> torch.Tensor:
+        return self._selected_body_contact_force(agent, self._upper_contact_body_id_tensors.get(agent))
+
+    def _torso_contact_force(self, agent: str) -> torch.Tensor:
+        return self._selected_body_contact_force(agent, self._torso_contact_body_id_tensors.get(agent))
+
+    def _support_bias(self, agent: str) -> torch.Tensor:
+        left = self._selected_body_contact_force(agent, self._left_support_body_id_tensors.get(agent))
+        right = self._selected_body_contact_force(agent, self._right_support_body_id_tensors.get(agent))
+        return (left - right) / torch.clamp(left + right, min=1.0)
+
+    def _leg_posture_quality(self, agent: str) -> torch.Tensor:
+        leg_ids = self._leg_action_id_tensors.get(agent)
+        if leg_ids is None or leg_ids.numel() == 0:
+            return self._stance_quality(agent)
+        leg_deviation = self.joint_pos_rel(agent).index_select(1, leg_ids)
+        return torch.exp(-torch.mean(torch.square(leg_deviation / 0.45), dim=-1))
+
+    def _knee_collapse(self, agent: str) -> torch.Tensor:
+        knee_ids = self._knee_action_id_tensors.get(agent)
+        if knee_ids is None or knee_ids.numel() == 0:
+            knee_term = torch.zeros(self.num_envs, device=self.device)
+        else:
+            knee_deviation = self.joint_pos_rel(agent).index_select(1, knee_ids)
+            knee_term = torch.mean(torch.relu(torch.abs(knee_deviation) - 0.45), dim=-1)
+        height_ratio = self.root_pos(agent)[:, 2] / max(self._runtime[agent].default_base_height, 1.0e-6)
+        return knee_term + torch.relu(0.90 - height_ratio)
 
     def _stance_quality(self, agent: str) -> torch.Tensor:
         height_ratio = self.root_pos(agent)[:, 2] / max(self._runtime[agent].default_base_height, 1.0e-6)
