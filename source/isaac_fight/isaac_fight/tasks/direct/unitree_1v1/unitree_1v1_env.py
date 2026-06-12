@@ -34,10 +34,6 @@ from .reward_terms import CombatRewardComputer
 from .unitree_1v1_env_cfg import GhostFighterUnitree1v1EnvCfg
 
 STRIKE_BODY_TOKENS = (
-    "torso",
-    "pelvis",
-    "waist",
-    "base",
     "shoulder",
     "upper_arm",
     "lower_arm",
@@ -271,6 +267,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._eval_contact_force = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._useful_contact = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._contact_intent = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._locomotion_drive = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._attack_momentum = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._strike_speed = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._destabilizing_impact = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
@@ -290,6 +287,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._inactivity = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._spin_without_contact = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._uncontrolled_collision = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._posture_instability = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._score = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._prev_distance_to_opponent = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._prev_root_height = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
@@ -392,6 +390,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         proof_gate = (self._proof_impact[agent] > 0.0).float()
         return {
             "total_reward": breakdown.total,
+            "locomotion_drive": reward_terms["locomotion_drive"],
             "useful_contact": reward_terms["useful_contact"],
             "destabilizing_impact": reward_terms["destabilizing_impact"],
             "topple_pressure": reward_terms["topple_pressure"],
@@ -401,11 +400,13 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             "opponent_knockdown": reward_terms["opponent_knockdown"],
             "opponent_destabilization": reward_terms["opponent_destabilization"],
             "impact_self_destabilization": reward_terms["impact_self_destabilization"],
+            "posture_instability": reward_terms["posture_instability"],
             "mutual_fall": reward_terms["mutual_fall"],
             "self_fall": reward_terms["self_fall"],
             "final_win": reward_terms["final_win"],
             "final_loss": reward_terms["final_loss"],
             "combat_useful_contact": self._useful_contact[agent],
+            "combat_locomotion_drive": self._locomotion_drive[agent],
             "combat_attack_momentum": self._attack_momentum[agent],
             "combat_destabilizing_impact": self._destabilizing_impact[agent],
             "combat_topple_pressure": self._topple_pressure[agent],
@@ -516,6 +517,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._eval_contact_force[agent][env_ids] = 0.0
             self._useful_contact[agent][env_ids] = 0.0
             self._contact_intent[agent][env_ids] = 0.0
+            self._locomotion_drive[agent][env_ids] = 0.0
             self._attack_momentum[agent][env_ids] = 0.0
             self._strike_speed[agent][env_ids] = 0.0
             self._destabilizing_impact[agent][env_ids] = 0.0
@@ -527,6 +529,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._proof_impact[agent][env_ids] = 0.0
             self._proof_destabilization[agent][env_ids] = 0.0
             self._recent_attack_pressure[agent][env_ids] = 0.0
+            self._posture_instability[agent][env_ids] = 0.0
             self._energy[agent][env_ids] = 0.0
             self._energy_ema[agent][env_ids] = 0.0
             self._score[agent][env_ids] = 0.0
@@ -636,10 +639,26 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         distance = torch.linalg.norm(rel[:, :2], dim=-1)
         rel_dir = normalize(torch.cat((rel[:, :2], torch.zeros_like(rel[:, 2:3])), dim=-1))
         closing_speed = torch.sum((self.root_lin_vel_w(agent) - self.root_lin_vel_w(opponent)) * rel_dir, dim=-1)
+        own_forward_speed = torch.relu(torch.sum(self.root_lin_vel_w(agent) * rel_dir, dim=-1))
         strike_speed = self._strike_body_speed(agent, opponent, rel_dir)
         proximity = torch.exp(-torch.square(distance / self.cfg.contact.useful_contact_distance))
         contact_proxy = torch.relu(closing_speed - self.cfg.contact.useful_contact_min_closing_speed) * proximity
         self._contact_intent[agent] = torch.clamp((0.25 + torch.relu(closing_speed)) * proximity, 0.0, 2.0)
+        support_force = self._support_contact_force(agent)
+        support_gate = torch.clamp(support_force / self.cfg.contact.force_normalizer, 0.0, 1.0)
+        locomotion_window = ((distance > 0.35) & (distance < self.cfg.contact.useful_contact_distance * 1.35)).float()
+        upright_drive_gate = torch.clamp(
+            (self._up_z[agent] - self.cfg.rules.knockdown_up_axis_z)
+            / max(1.0 - self.cfg.rules.knockdown_up_axis_z, 1.0e-6),
+            0.0,
+            1.0,
+        )
+        self._locomotion_drive[agent] = (
+            torch.clamp(own_forward_speed / self.cfg.contact.strike_speed_normalizer, 0.0, 2.0)
+            * support_gate
+            * locomotion_window
+            * upright_drive_gate
+        )
 
         lower_body_attack_window = distance < self.cfg.contact.useful_contact_distance
         candidate_contact_force = self._net_contact_force(agent, include_lower_body_contacts=lower_body_attack_window)
@@ -757,6 +776,12 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._uncontrolled_collision[agent] = self._useful_contact[agent] * (
             1.0 - torch.clamp(self._up_z[agent], 0.0, 1.0)
         )
+        lateral_ang_vel = torch.linalg.norm(self.root_ang_vel_b(agent)[:, :2], dim=-1)
+        no_real_attack = (self._proof_impact[agent] < self.cfg.contact.fall_credit_min_attack).float()
+        self._posture_instability[agent] = (
+            2.0 * torch.relu(self.cfg.rules.knockdown_up_axis_z + 0.35 - self._up_z[agent])
+            + torch.clamp(lateral_ang_vel / 5.0, 0.0, 2.0)
+        ) * no_real_attack
 
     def _update_recent_attack_pressure(
         self,
@@ -894,6 +919,13 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             return torch.zeros(self.num_envs, device=self.device)
         return torch.linalg.norm(body_forces, dim=-1).amax(dim=-1)
 
+    def _support_contact_force(self, agent: str) -> torch.Tensor:
+        body_forces = getattr(self.robots[agent].data, "body_net_forces_w", None)
+        support_ids = self._support_body_id_tensors.get(agent)
+        if body_forces is None or support_ids is None or support_ids.numel() == 0:
+            return torch.zeros(self.num_envs, device=self.device)
+        return torch.linalg.norm(body_forces.index_select(1, support_ids), dim=-1).amax(dim=-1)
+
     def _accumulate_episode_terms(self, agent: str, terms: dict[str, torch.Tensor]) -> None:
         for name, value in terms.items():
             if name not in self._episode_sums[agent]:
@@ -912,6 +944,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             "draw_rate": 0.0,
             "duration_s": 0.0,
             "useful_contact": 0.0,
+            "locomotion_drive": 0.0,
             "contact_intent": 0.0,
             "attack_momentum": 0.0,
             "strike_speed": 0.0,

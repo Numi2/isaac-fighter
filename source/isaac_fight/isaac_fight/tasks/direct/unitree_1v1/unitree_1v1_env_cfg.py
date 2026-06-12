@@ -129,6 +129,7 @@ class RewardScalesCfg:
     upright_stability: float = 0.03
     balance_recovery: float = 0.03
     controlled_approach: float = 1.80
+    locomotion_drive: float = 2.40
     contact_intent: float = 2.20
     attack_momentum: float = 2.80
     arena_control: float = 0.005
@@ -142,6 +143,7 @@ class RewardScalesCfg:
     opponent_knockdown: float = 30.00
     impact_balance: float = 4.00
     impact_self_destabilization: float = 8.00
+    posture_instability: float = 1.80
     mutual_fall: float = 26.00
     stay_inside: float = 0.01
     energy: float = 0.015

@@ -38,6 +38,7 @@ class CombatRewardComputer:
         facing_gate = torch.clamp(torch.cos(heading_error), min=0.0)
         approach_delta = torch.clamp(prev_distance - distance, -0.25, 0.25)
         controlled_approach = approach_delta * facing_gate * upright
+        locomotion_drive = env._locomotion_drive[agent] * facing_gate * upright
         contact_intent = env._contact_intent[agent] * facing_gate * upright * env.proxy_reward_scale()
         attack_momentum = env._attack_momentum[agent] * facing_gate * upright
 
@@ -74,6 +75,7 @@ class CombatRewardComputer:
         inactivity_penalty = env._inactivity[agent]
         spin_penalty = env._spin_without_contact[agent]
         uncontrolled_collision = env._uncontrolled_collision[agent]
+        posture_instability = env._posture_instability[agent]
 
         final_win, final_loss, final_draw = self._terminal_terms(env, agent)
 
@@ -81,6 +83,7 @@ class CombatRewardComputer:
             "upright_stability": scales.upright_stability * upright,
             "balance_recovery": scales.balance_recovery * balance_recovery,
             "controlled_approach": scales.controlled_approach * controlled_approach,
+            "locomotion_drive": scales.locomotion_drive * locomotion_drive,
             "contact_intent": scales.contact_intent * contact_intent,
             "attack_momentum": scales.attack_momentum * attack_momentum,
             "arena_control": scales.arena_control * arena_control,
@@ -94,6 +97,7 @@ class CombatRewardComputer:
             "opponent_knockdown": scales.opponent_knockdown * opponent_knockdown,
             "impact_balance": scales.impact_balance * impact_balance,
             "impact_self_destabilization": -scales.impact_self_destabilization * impact_self_destabilization,
+            "posture_instability": -scales.posture_instability * posture_instability,
             "mutual_fall": -scales.mutual_fall * mutual_fall,
             "stay_inside": scales.stay_inside * stay_inside,
             "energy_efficiency": -scales.energy * energy,
