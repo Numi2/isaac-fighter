@@ -60,7 +60,14 @@ class SkrlCheckpointPolicyBackend:
         self.agent_id = agent_id
         self.device = torch.device(device if torch.cuda.is_available() and "cuda" in str(device) else "cpu")
         checkpoint = torch.load(self.path, map_location=self.device)
-        state_dict = checkpoint[agent_id]["policy"] if agent_id in checkpoint else checkpoint["policy"]
+        agent_checkpoint = checkpoint[agent_id] if agent_id in checkpoint else checkpoint
+        state_dict = agent_checkpoint["policy"]
+        self.obs_mean: torch.Tensor | None = None
+        self.obs_var: torch.Tensor | None = None
+        preprocessor = agent_checkpoint.get("state_preprocessor", {})
+        if "running_mean" in preprocessor and "running_variance" in preprocessor:
+            self.obs_mean = preprocessor["running_mean"].float().to(self.device)
+            self.obs_var = preprocessor["running_variance"].float().to(self.device)
         self.module = self._build_policy(state_dict).to(self.device)
         self.module.load_state_dict(
             {key.removeprefix("net_container."): value for key, value in state_dict.items() if key.startswith("net_container.")}
@@ -84,7 +91,10 @@ class SkrlCheckpointPolicyBackend:
 
     @torch.no_grad()
     def act(self, observations: torch.Tensor) -> torch.Tensor:
-        return torch.clamp(self.module(observations.to(self.device)).to(observations.device), -1.0, 1.0)
+        obs = observations.to(self.device)
+        if self.obs_mean is not None and self.obs_var is not None:
+            obs = torch.clamp((obs - self.obs_mean) / (torch.sqrt(self.obs_var) + 1.0e-8), -5.0, 5.0)
+        return torch.clamp(self.module(obs).to(observations.device), -1.0, 1.0)
 
 
 @dataclass
@@ -194,6 +204,7 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         return obs, rewards, terminated, truncated, infos
 
     def _sample_backend(self) -> None:
+        self.pool.load()
         sample = self.pool.sample(
             active_elo=self.active_elo,
             elo_window=self.elo_window,

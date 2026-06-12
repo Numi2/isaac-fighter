@@ -96,27 +96,27 @@ class ObservationCfg:
 class RewardScalesCfg:
     """Reward weights. All penalties are configured as positive magnitudes."""
 
-    upright_stability: float = 0.12
-    balance_recovery: float = 0.08
-    controlled_approach: float = 1.60
-    contact_intent: float = 1.75
-    arena_control: float = 0.02
-    useful_contact: float = 4.00
-    opponent_destabilization: float = 3.00
-    opponent_knockdown: float = 18.00
-    stay_inside: float = 0.05
+    upright_stability: float = 0.03
+    balance_recovery: float = 0.03
+    controlled_approach: float = 1.80
+    contact_intent: float = 2.20
+    arena_control: float = 0.005
+    useful_contact: float = 6.00
+    opponent_destabilization: float = 5.00
+    opponent_knockdown: float = 30.00
+    stay_inside: float = 0.01
     energy: float = 0.015
     self_fall: float = 7.00
     out_of_bounds: float = 10.00
     excessive_torque: float = 0.025
     joint_limit_abuse: float = 0.80
     jitter: float = 0.12
-    inactivity: float = 0.80
-    spin_without_contact: float = 0.80
+    inactivity: float = 1.50
+    spin_without_contact: float = 1.20
     uncontrolled_collision: float = 2.00
-    final_win: float = 60.0
-    final_loss: float = 35.0
-    final_draw: float = -6.0
+    final_win: float = 120.0
+    final_loss: float = 70.0
+    final_draw: float = -25.0
     energy_normalizer: float = 500.0
     action_effort_normalizer: float = 1.0
 

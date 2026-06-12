@@ -90,15 +90,17 @@ def _summarize_tournament(path: Path) -> dict[str, Any]:
     matches = payload.get("matches", [])
     if not matches:
         return {"matches": 0}
-    wins_a = sum(1 for match in matches if match.get("winner") == 1)
-    wins_b = sum(1 for match in matches if match.get("winner") == 2)
-    draws = sum(1 for match in matches if match.get("draw"))
+    wins_a = sum(int(match.get("wins_fighter_a", 1 if match.get("winner") == 1 else 0)) for match in matches)
+    wins_b = sum(int(match.get("wins_fighter_b", 1 if match.get("winner") == 2 else 0)) for match in matches)
+    draws = sum(int(match.get("draws", 1 if match.get("draw") else 0)) for match in matches)
+    env_rollouts = sum(int(match.get("num_envs", 1)) for match in matches)
     return {
         "matches": len(matches),
+        "env_rollouts": env_rollouts,
         "wins_a": wins_a,
         "wins_b": wins_b,
         "draws": draws,
-        "mean_duration_s": sum(float(m.get("duration_s", 0.0)) for m in matches) / len(matches),
+        "mean_duration_s": sum(float(m.get("duration_s_mean", m.get("duration_s", 0.0))) for m in matches) / len(matches),
         "mean_eval_contact_force": sum(
             float(m.get("eval_contact_force_fighter_a", m.get("sensor_contact_force_fighter_a", m.get("sensor_contact_force_a", 0.0))))
             + float(m.get("eval_contact_force_fighter_b", m.get("sensor_contact_force_fighter_b", m.get("sensor_contact_force_b", 0.0))))

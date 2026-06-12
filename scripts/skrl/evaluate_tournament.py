@@ -78,16 +78,20 @@ def main(env_cfg, agent_cfg):  # noqa: ANN001, ARG001
                     done = terminated[FIGHTER_A] | truncated[FIGHTER_A]
                     total_reward[FIGHTER_A] += float(rewards[FIGHTER_A].mean().item())
                     total_reward[FIGHTER_B] += float(rewards[FIGHTER_B].mean().item())
-                winner = int(env.unwrapped._winner[0].item())
-                if winner == 1:
-                    result_policy_on_a = 1.0
-                elif winner == 2:
-                    result_policy_on_a = 0.0
-                else:
-                    result_policy_on_a = 0.5
-                ra, rb = elo.update(policy_on_a.policy_id, policy_on_b.policy_id, result_policy_on_a)
-                pool.update_result(policy_on_a.policy_id, result_policy_on_a, elo=ra)
-                pool.update_result(policy_on_b.policy_id, 1.0 - result_policy_on_a, elo=rb)
+                winners = env.unwrapped._winner.detach()
+                result_values = torch.where(
+                    winners == 1,
+                    torch.ones_like(winners, dtype=torch.float32),
+                    torch.where(winners == 2, torch.zeros_like(winners, dtype=torch.float32), torch.full_like(winners, 0.5, dtype=torch.float32)),
+                )
+                ra, rb = elo.ensure(policy_on_a.policy_id).rating, elo.ensure(policy_on_b.policy_id).rating
+                for result in result_values.cpu().tolist():
+                    ra, rb = elo.update(policy_on_a.policy_id, policy_on_b.policy_id, float(result))
+                    pool.update_result(policy_on_a.policy_id, float(result), elo=ra)
+                    pool.update_result(policy_on_b.policy_id, float(1.0 - result), elo=rb)
+                wins_a = int((winners == 1).sum().item())
+                wins_b = int((winners == 2).sum().item())
+                draws = int((winners == 0).sum().item())
                 results.append(
                     {
                         "round": round_idx,
@@ -95,25 +99,28 @@ def main(env_cfg, agent_cfg):  # noqa: ANN001, ARG001
                         "policy_fighter_b": policy_on_b.policy_id,
                         "fighter_a_robot": env_cfg.fighter_a.robot_name,
                         "fighter_b_robot": env_cfg.fighter_b.robot_name,
-                        "winner": winner,
-                        "draw": winner == 0,
+                        "num_envs": args_cli.num_envs,
+                        "wins_fighter_a": wins_a,
+                        "wins_fighter_b": wins_b,
+                        "draws": draws,
+                        "result_policy_fighter_a_mean": float(result_values.mean().item()),
                         "rating_policy_fighter_a": ra,
                         "rating_policy_fighter_b": rb,
                         "reward_fighter_a": total_reward[FIGHTER_A],
                         "reward_fighter_b": total_reward[FIGHTER_B],
-                        "duration_s": float(env.unwrapped.episode_length_buf[0].item() * env.unwrapped.step_dt),
-                        "real_opponent_contact_force_fighter_a": float(env.unwrapped._real_opponent_contact_force[FIGHTER_A][0].item()),
-                        "real_opponent_contact_force_fighter_b": float(env.unwrapped._real_opponent_contact_force[FIGHTER_B][0].item()),
-                        "ground_contact_force_fighter_a": float(env.unwrapped._ground_contact_force[FIGHTER_A][0].item()),
-                        "ground_contact_force_fighter_b": float(env.unwrapped._ground_contact_force[FIGHTER_B][0].item()),
-                        "proxy_engagement_fighter_a": float(env.unwrapped._proxy_engagement[FIGHTER_A][0].item()),
-                        "proxy_engagement_fighter_b": float(env.unwrapped._proxy_engagement[FIGHTER_B][0].item()),
-                        "eval_contact_force_fighter_a": float(env.unwrapped._eval_contact_force[FIGHTER_A][0].item()),
-                        "eval_contact_force_fighter_b": float(env.unwrapped._eval_contact_force[FIGHTER_B][0].item()),
-                        "proof_impact_fighter_a": float(env.unwrapped._proof_impact[FIGHTER_A][0].item()),
-                        "proof_impact_fighter_b": float(env.unwrapped._proof_impact[FIGHTER_B][0].item()),
-                        "energy_fighter_a": float(env.unwrapped._energy_ema[FIGHTER_A][0].item()),
-                        "energy_fighter_b": float(env.unwrapped._energy_ema[FIGHTER_B][0].item()),
+                        "duration_s_mean": float((env.unwrapped.episode_length_buf.float() * env.unwrapped.step_dt).mean().item()),
+                        "real_opponent_contact_force_fighter_a": float(env.unwrapped._real_opponent_contact_force[FIGHTER_A].mean().item()),
+                        "real_opponent_contact_force_fighter_b": float(env.unwrapped._real_opponent_contact_force[FIGHTER_B].mean().item()),
+                        "ground_contact_force_fighter_a": float(env.unwrapped._ground_contact_force[FIGHTER_A].mean().item()),
+                        "ground_contact_force_fighter_b": float(env.unwrapped._ground_contact_force[FIGHTER_B].mean().item()),
+                        "proxy_engagement_fighter_a": float(env.unwrapped._proxy_engagement[FIGHTER_A].mean().item()),
+                        "proxy_engagement_fighter_b": float(env.unwrapped._proxy_engagement[FIGHTER_B].mean().item()),
+                        "eval_contact_force_fighter_a": float(env.unwrapped._eval_contact_force[FIGHTER_A].mean().item()),
+                        "eval_contact_force_fighter_b": float(env.unwrapped._eval_contact_force[FIGHTER_B].mean().item()),
+                        "proof_impact_fighter_a": float(env.unwrapped._proof_impact[FIGHTER_A].mean().item()),
+                        "proof_impact_fighter_b": float(env.unwrapped._proof_impact[FIGHTER_B].mean().item()),
+                        "energy_fighter_a": float(env.unwrapped._energy_ema[FIGHTER_A].mean().item()),
+                        "energy_fighter_b": float(env.unwrapped._energy_ema[FIGHTER_B].mean().item()),
                     }
                 )
     payload = {"schema": "isaac_fight.tournament.v1", "elo": elo.to_dict(), "matches": results}
