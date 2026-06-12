@@ -71,11 +71,11 @@ class ContactCfg:
     """Contact detection and logging settings."""
 
     force_normalizer: float = 600.0
-    useful_contact_distance: float = 1.25
-    useful_contact_min_closing_speed: float = 0.15
-    robot_contact_proxy_gain: float = 0.35
-    destabilization_height_drop_scale: float = 2.0
-    destabilization_tilt_gain: float = 1.0
+    useful_contact_distance: float = 1.65
+    useful_contact_min_closing_speed: float = 0.05
+    robot_contact_proxy_gain: float = 0.60
+    destabilization_height_drop_scale: float = 3.0
+    destabilization_tilt_gain: float = 1.75
 
 
 @configclass
@@ -96,26 +96,26 @@ class ObservationCfg:
 class RewardScalesCfg:
     """Reward weights. All penalties are configured as positive magnitudes."""
 
-    upright_stability: float = 0.45
-    balance_recovery: float = 0.30
-    controlled_approach: float = 1.20
-    arena_control: float = 0.08
-    useful_contact: float = 1.60
-    opponent_destabilization: float = 1.10
-    opponent_knockdown: float = 7.50
-    stay_inside: float = 0.15
-    energy: float = 0.020
-    self_fall: float = 6.00
-    out_of_bounds: float = 8.00
+    upright_stability: float = 0.12
+    balance_recovery: float = 0.08
+    controlled_approach: float = 1.60
+    arena_control: float = 0.02
+    useful_contact: float = 4.00
+    opponent_destabilization: float = 3.00
+    opponent_knockdown: float = 18.00
+    stay_inside: float = 0.05
+    energy: float = 0.015
+    self_fall: float = 7.00
+    out_of_bounds: float = 10.00
     excessive_torque: float = 0.025
     joint_limit_abuse: float = 0.80
     jitter: float = 0.12
-    inactivity: float = 0.25
-    spin_without_contact: float = 0.40
-    uncontrolled_collision: float = 1.50
-    final_win: float = 25.0
-    final_loss: float = 18.0
-    final_draw: float = -2.0
+    inactivity: float = 0.80
+    spin_without_contact: float = 0.80
+    uncontrolled_collision: float = 2.00
+    final_win: float = 60.0
+    final_loss: float = 35.0
+    final_draw: float = -6.0
     energy_normalizer: float = 500.0
     action_effort_normalizer: float = 1.0
 

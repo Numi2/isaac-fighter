@@ -25,7 +25,8 @@ Achieved:
 - Fight rules: arena bounds, randomized facing spawns, fall/knockdown/knockout logic, timer decision, winner/loser/draw assignment.
 - Combat shaping: approach pressure, useful contact, destabilization, knockdown reward, stability, efficiency, boundary discipline, terminal outcome terms.
 - skrl IPPO/MAPPO configs aligned with Isaac Lab 2.3 runner schema.
-- Long-running Isaac Launchable training started from live checkpoints with a persistent policy pool and sidecar checkpoint sync.
+- 8192-env Isaac Launchable self-play resumed from live checkpoints with persistent pool sync.
+- TensorBoard combat telemetry: useful contact, contact force, destabilization, knockdown events, inactivity, spin-without-contact, win/loss/draw, score.
 
 Next:
 
@@ -33,6 +34,7 @@ Next:
 - Export deployable policy snapshots for frozen historical-opponent rollouts.
 - Run tournament ladders to update Elo, weakness scores, and matchup selection.
 - Record representative replay JSONL from late-stage checkpoints for behavior inspection.
+- Tune from telemetry toward high useful-contact, high opponent-destabilization, low passive-survival return.
 
 ## Install
 
@@ -95,6 +97,11 @@ Resume harder:
   --task GhostFighter-Unitree-1v1-Direct-v0 \
   --checkpoint /path/to/checkpoint.pt \
   --output /path/to/replays/match.jsonl
+```
+
+```bash
+./isaaclab.sh -p /path/to/isaac-fight/scripts/tools/summarize_fight_progress.py \
+  --log_dir /path/to/IsaacLab/logs/skrl/ghostfighter_unitree_1v1/latest_run
 ```
 
 ## Boundary

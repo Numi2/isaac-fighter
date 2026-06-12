@@ -373,10 +373,10 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                     self._knockdown[agent], self._knockdown_clock[agent] + self.step_dt, torch.zeros_like(self._knockdown_clock[agent])
                 )
                 self._score[agent] += (
-                    0.08 * self._useful_contact[agent]
-                    + 0.12 * self._opponent_destabilization[agent]
-                    + 3.0 * self._new_knockdown[opponent].float()
-                    + 0.01 * torch.clamp(1.0 - torch.linalg.norm(self.root_pos(agent)[:, :2], dim=-1) / self.cfg.arena.radius, 0.0, 1.0)
+                    0.20 * self._useful_contact[agent]
+                    + 0.30 * self._opponent_destabilization[agent]
+                    + 5.0 * self._new_knockdown[opponent].float()
+                    + 0.002 * torch.clamp(1.0 - torch.linalg.norm(self.root_pos(agent)[:, :2], dim=-1) / self.cfg.arena.radius, 0.0, 1.0)
                 )
 
         if not advance:
