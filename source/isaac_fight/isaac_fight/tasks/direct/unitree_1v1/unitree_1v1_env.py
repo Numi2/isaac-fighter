@@ -248,10 +248,21 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
     def _get_rewards(self) -> dict[str, torch.Tensor]:
         rewards: dict[str, torch.Tensor] = {}
         for agent in FIGHTERS:
-            breakdown = self._reward_computer.compute(self, agent, opponent_of(agent))
+            opponent = opponent_of(agent)
+            breakdown = self._reward_computer.compute(self, agent, opponent)
             rewards[agent] = breakdown.total
             self._last_reward_terms[agent] = breakdown.terms
-            self._accumulate_episode_terms(agent, breakdown.terms | {"total_reward": breakdown.total})
+            combat_metrics = {
+                "combat_useful_contact": self._useful_contact[agent],
+                "combat_contact_force": self._contact_force[agent],
+                "combat_opponent_destabilization": self._opponent_destabilization[agent],
+                "combat_opponent_knockdown_events": self._new_knockdown[opponent].float(),
+                "combat_self_knockdown_events": self._new_knockdown[agent].float(),
+                "combat_inactivity": self._inactivity[agent],
+                "combat_spin_without_contact": self._spin_without_contact[agent],
+                "combat_uncontrolled_collision": self._uncontrolled_collision[agent],
+            }
+            self._accumulate_episode_terms(agent, breakdown.terms | {"total_reward": breakdown.total} | combat_metrics)
             self.extras[agent]["reward_terms"] = breakdown.detached_mean_dict()
         self._write_replay_step(rewards)
         self._commit_history()
@@ -466,28 +477,68 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         if env_ids.numel() == 0:
             return
         duration = self.episode_length_buf[env_ids].float() * self.step_dt
+        skrl_log: dict[str, torch.Tensor] = {}
+        combat_totals: dict[str, float] = {
+            "win_rate": 0.0,
+            "loss_rate": 0.0,
+            "draw_rate": 0.0,
+            "duration_s": 0.0,
+            "useful_contact": 0.0,
+            "contact_force": 0.0,
+            "opponent_destabilization": 0.0,
+            "opponent_knockdown_events": 0.0,
+            "self_knockdown_events": 0.0,
+            "inactivity": 0.0,
+            "spin_without_contact": 0.0,
+            "uncontrolled_collision": 0.0,
+            "score": 0.0,
+        }
         for agent in FIGHTERS:
             own_id = 1 if agent == FIGHTER_A else 2
             opp_id = 2 if agent == FIGHTER_A else 1
+            counts = torch.clamp(self._episode_counts[agent][env_ids], min=1.0)
             log: dict[str, float] = {}
             for name, values in self._episode_sums[agent].items():
                 log[f"Episode/{name}"] = float(values[env_ids].mean().item())
+                if name.startswith("combat_"):
+                    metric_name = name.removeprefix("combat_")
+                    average_value = float((values[env_ids] / counts).mean().item())
+                    log[f"Combat/{metric_name}_per_step"] = average_value
+                    skrl_log[f"{agent}/Combat/{metric_name}_per_step"] = torch.tensor(average_value, device=self.device)
+                    combat_totals[metric_name] += average_value
+                skrl_log[f"{agent}/Episode/{name}"] = torch.tensor(log[f"Episode/{name}"], device=self.device)
+            win_rate = float((self._winner[env_ids] == own_id).float().mean().item())
+            loss_rate = float((self._winner[env_ids] == opp_id).float().mean().item())
+            draw_rate = float(self._draw[env_ids].float().mean().item())
+            duration_s = float(duration.mean().item()) if duration.numel() else 0.0
+            score = float(self._score[agent][env_ids].mean().item())
             log.update(
                 {
-                    "Match/win_rate": float((self._winner[env_ids] == own_id).float().mean().item()),
-                    "Match/loss_rate": float((self._winner[env_ids] == opp_id).float().mean().item()),
-                    "Match/draw_rate": float(self._draw[env_ids].float().mean().item()),
-                    "Match/avg_duration_s": float(duration.mean().item()) if duration.numel() else 0.0,
+                    "Match/win_rate": win_rate,
+                    "Match/loss_rate": loss_rate,
+                    "Match/draw_rate": draw_rate,
+                    "Match/avg_duration_s": duration_s,
                     "Match/knockdowns": float(self._new_knockdown[agent][env_ids].float().sum().item()),
                     "Match/self_falls": float(self._fallen[agent][env_ids].float().sum().item()),
                     "Match/out_of_bounds_losses": float(self._out_of_bounds[agent][env_ids].float().sum().item()),
                     "Match/avg_contact_force": float(self._contact_force[agent][env_ids].mean().item()),
                     "Match/avg_energy_use": float(self._energy_ema[agent][env_ids].mean().item()),
+                    "Match/score": score,
                     "Match/policy_version": 0.0,
                     "Match/opponent_version": 0.0,
                 }
             )
+            for key, value in log.items():
+                skrl_log[f"{agent}/{key}"] = torch.tensor(value, device=self.device)
+            combat_totals["win_rate"] += win_rate
+            combat_totals["loss_rate"] += loss_rate
+            combat_totals["draw_rate"] += draw_rate
+            combat_totals["duration_s"] += duration_s
+            combat_totals["score"] += score
             self.extras[agent]["episode"] = log
+        for key, value in combat_totals.items():
+            skrl_log[f"Combat/mean_{key}"] = torch.tensor(value / len(FIGHTERS), device=self.device)
+        self.extras["log"] = skrl_log
 
     def _write_replay_step(self, rewards: dict[str, torch.Tensor]) -> None:
         if self._replay is None:
