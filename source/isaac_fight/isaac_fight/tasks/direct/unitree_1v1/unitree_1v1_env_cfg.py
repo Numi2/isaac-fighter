@@ -71,9 +71,9 @@ class ContactCfg:
     """Contact detection and logging settings."""
 
     force_normalizer: float = 600.0
-    useful_contact_distance: float = 1.65
-    useful_contact_min_closing_speed: float = 0.05
-    robot_contact_proxy_gain: float = 0.60
+    useful_contact_distance: float = 1.95
+    useful_contact_min_closing_speed: float = 0.0
+    robot_contact_proxy_gain: float = 0.85
     destabilization_height_drop_scale: float = 3.0
     destabilization_tilt_gain: float = 1.75
 
@@ -99,6 +99,7 @@ class RewardScalesCfg:
     upright_stability: float = 0.12
     balance_recovery: float = 0.08
     controlled_approach: float = 1.60
+    contact_intent: float = 1.25
     arena_control: float = 0.02
     useful_contact: float = 4.00
     opponent_destabilization: float = 3.00
@@ -152,8 +153,8 @@ class GhostFighterUnitree1v1EnvCfg(DirectMARLEnvCfg):
     state_space = -1
 
     # default robots: G1 main fighter, H1 larger opponent
-    fighter_a: FighterCfg = FighterCfg(robot_name="g1_29dof", spawn_xy=(-1.20, 0.0), spawn_yaw=0.0)
-    fighter_b: FighterCfg = FighterCfg(robot_name="h1", spawn_xy=(1.20, 0.0), spawn_yaw=math.pi)
+    fighter_a: FighterCfg = FighterCfg(robot_name="g1_29dof", spawn_xy=(-0.78, 0.0), spawn_yaw=0.0, spawn_xy_noise=0.06)
+    fighter_b: FighterCfg = FighterCfg(robot_name="h1", spawn_xy=(0.78, 0.0), spawn_yaw=math.pi, spawn_xy_noise=0.06)
 
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=0.005, render_interval=decimation)

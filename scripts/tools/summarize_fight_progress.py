@@ -31,6 +31,7 @@ DEFAULT_TAGS = (
     "Reward / Instantaneous reward (mean)",
     "Episode / Total timesteps (mean)",
     "Info / Combat/mean_useful_contact",
+    "Info / Combat/mean_contact_intent",
     "Info / Combat/mean_contact_force",
     "Info / Combat/mean_opponent_destabilization",
     "Info / Combat/mean_opponent_knockdown_events",
