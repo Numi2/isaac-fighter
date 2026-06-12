@@ -72,6 +72,7 @@ from isaaclab_rl.skrl import SkrlVecEnvWrapper
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import isaac_fight.tasks  # noqa: F401
+from isaac_fight.locomotion_bootstrap import apply_locomotion_warmstart, is_locomotion_warmstart_checkpoint
 from isaac_fight.tasks.direct.unitree_1v1.self_play import (
     LiveSelfPlayPoolSync,
     SelfPlayTrainingSupervisor,
@@ -293,7 +294,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         resume_path = retrieve_file_path(args_cli.checkpoint)
         resume_path = _adapt_checkpoint_observation_space(resume_path, env_cfg, algorithm, log_dir)
         print(f"[INFO] Loading checkpoint: {resume_path}")
-        runner.agent.load(resume_path)
+        if is_locomotion_warmstart_checkpoint(resume_path):
+            loaded = apply_locomotion_warmstart(runner.agent, resume_path)
+            if loaded:
+                print(f"[INFO] Loaded locomotion warm-start modules: {', '.join(loaded)}")
+            else:
+                print("[WARN] Locomotion warm-start module lookup failed; falling back to skrl checkpoint loader.")
+                runner.agent.load(resume_path)
+        else:
+            runner.agent.load(resume_path)
 
     supervisor = None
     if args_cli.self_play:

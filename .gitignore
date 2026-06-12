@@ -25,6 +25,7 @@ recordings/
 replays/
 checkpoints/
 policy_pool/
+/locomotion_bootstrap/
 
 # OS / editors
 .DS_Store
