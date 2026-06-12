@@ -33,6 +33,8 @@ class FighterCfg:
     spawn_yaw: float = 0.0
     spawn_xy_noise: float = 0.10
     spawn_yaw_noise: float = 0.20
+    spawn_forward_speed: float = 0.0
+    spawn_forward_speed_noise: float = 0.0
     action_scale: float | None = None
     action_smoothing: float = 0.35
     controlled_joint_names: tuple[str, ...] = ()
@@ -128,6 +130,9 @@ class RewardScalesCfg:
     arena_control: float = 0.005
     useful_contact: float = 6.00
     destabilizing_impact: float = 8.00
+    topple_pressure: float = 7.00
+    drive_pressure: float = 5.00
+    support_break_pressure: float = 6.50
     opponent_destabilization: float = 5.00
     opponent_knockdown: float = 30.00
     stay_inside: float = 0.01

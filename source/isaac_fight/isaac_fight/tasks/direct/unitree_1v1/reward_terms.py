@@ -45,6 +45,9 @@ class CombatRewardComputer:
 
         useful_contact = env._useful_contact[agent] * upright
         destabilizing_impact = env._destabilizing_impact[agent] * upright
+        topple_pressure = env._topple_pressure[agent] * upright
+        drive_pressure = env._drive_pressure[agent] * upright
+        support_break_pressure = env._support_break_pressure[agent] * upright
         opp_destabilization = env._proof_destabilization[agent]
         opponent_knockdown = env._new_knockdown[opponent].float() + 0.15 * env._knockdown[opponent].float()
 
@@ -67,6 +70,9 @@ class CombatRewardComputer:
             "arena_control": scales.arena_control * arena_control,
             "useful_contact": scales.useful_contact * useful_contact,
             "destabilizing_impact": scales.destabilizing_impact * destabilizing_impact,
+            "topple_pressure": scales.topple_pressure * topple_pressure,
+            "drive_pressure": scales.drive_pressure * drive_pressure,
+            "support_break_pressure": scales.support_break_pressure * support_break_pressure,
             "opponent_destabilization": scales.opponent_destabilization * opp_destabilization,
             "opponent_knockdown": scales.opponent_knockdown * opponent_knockdown,
             "stay_inside": scales.stay_inside * stay_inside,

@@ -55,6 +55,7 @@ STRIKE_BODY_TOKENS = (
     "head",
     "neck",
 )
+SUPPORT_BODY_TOKENS = ("foot", "ankle", "toe", "sole")
 
 
 class GhostFighterUnitree1v1Env(DirectMARLEnv):
@@ -79,6 +80,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._runtime: dict[str, FighterRuntimeInfo] = {}
         self._keypoint_body_ids: dict[str, list[int]] = {}
         self._keypoint_body_names: dict[str, list[str]] = {}
+        self._support_body_ids: dict[str, list[int]] = {}
         self._resolve_controlled_joints()
         self._allocate_buffers()
         self._configure_replay()
@@ -192,6 +194,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 action_scale=float(scale),
             )
             self._resolve_keypoint_bodies(agent)
+            self._resolve_support_bodies(agent)
 
     def _resolve_keypoint_bodies(self, agent: str) -> None:
         robot = self.robots[agent]
@@ -208,6 +211,14 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             names.append(str(body_names[0]) if body_names else "")
         self._keypoint_body_ids[agent] = ids
         self._keypoint_body_names[agent] = names
+
+    def _resolve_support_bodies(self, agent: str) -> None:
+        body_names = tuple(getattr(self.robots[agent], "body_names", ()) or ())
+        self._support_body_ids[agent] = [
+            body_id
+            for body_id, body_name in enumerate(body_names)
+            if any(token in body_name.lower() for token in SUPPORT_BODY_TOKENS)
+        ]
 
     def _allocate_buffers(self) -> None:
         device = self.device
@@ -234,6 +245,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._attack_momentum = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._strike_speed = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._destabilizing_impact = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._topple_pressure = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._drive_pressure = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._support_break_pressure = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._opponent_destabilization = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._proof_contact = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._proof_impact = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
@@ -331,6 +345,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 "combat_attack_momentum": self._attack_momentum[agent],
                 "combat_strike_speed": self._strike_speed[agent],
                 "combat_destabilizing_impact": self._destabilizing_impact[agent],
+                "combat_topple_pressure": self._topple_pressure[agent],
+                "combat_drive_pressure": self._drive_pressure[agent],
+                "combat_support_break_pressure": self._support_break_pressure[agent],
                 "combat_candidate_body_contact_force": self._candidate_body_contact_force[agent],
                 "combat_opponent_contact_attribution": self._opponent_contact_attribution[agent],
                 "combat_real_opponent_contact_force": self._real_opponent_contact_force[agent],
@@ -413,6 +430,12 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         yaw += fighter_cfg.spawn_yaw_noise * (2.0 * torch.rand_like(yaw) - 1.0)
         root_state[:, 3:7] = quat_from_yaw(yaw)
         root_state[:, 7:] = 0.0
+        forward_speed = float(fighter_cfg.spawn_forward_speed)
+        if forward_speed != 0.0:
+            noise = float(fighter_cfg.spawn_forward_speed_noise)
+            speed = forward_speed + noise * (2.0 * torch.rand_like(yaw) - 1.0)
+            root_state[:, 7] = speed * torch.cos(yaw)
+            root_state[:, 8] = speed * torch.sin(yaw)
 
         robot.write_root_pose_to_sim(root_state[:, :7], env_ids)
         robot.write_root_velocity_to_sim(root_state[:, 7:], env_ids)
@@ -440,6 +463,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._attack_momentum[agent][env_ids] = 0.0
             self._strike_speed[agent][env_ids] = 0.0
             self._destabilizing_impact[agent][env_ids] = 0.0
+            self._topple_pressure[agent][env_ids] = 0.0
+            self._drive_pressure[agent][env_ids] = 0.0
+            self._support_break_pressure[agent][env_ids] = 0.0
             self._opponent_destabilization[agent][env_ids] = 0.0
             self._proof_contact[agent][env_ids] = 0.0
             self._proof_impact[agent][env_ids] = 0.0
@@ -480,6 +506,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                     0.10 * self._attack_momentum[agent]
                     + 0.20 * self._useful_contact[agent]
                     + 0.40 * self._destabilizing_impact[agent]
+                    + 0.35 * self._topple_pressure[agent]
+                    + 0.25 * self._drive_pressure[agent]
+                    + 0.25 * self._support_break_pressure[agent]
                     + 0.30 * self._proof_destabilization[agent]
                     + 5.0 * self._new_knockdown[opponent].float()
                     + 0.002 * torch.clamp(1.0 - torch.linalg.norm(self.root_pos(agent)[:, :2], dim=-1) / self.cfg.arena.radius, 0.0, 1.0)
@@ -564,6 +593,20 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         force_term = torch.clamp(self._training_contact_force[agent] / self.cfg.contact.force_normalizer, 0.0, 5.0)
         physical_contact_gate = (self._eval_contact_force[agent] > 0.08 * self.cfg.contact.force_normalizer).float()
         destabilizing_impact = force_term * strike_speed_term * physical_contact_gate * (1.0 + torch.clamp(destabilization_signal, 0.0, 2.0))
+        opp_lateral_ang_vel = torch.linalg.norm(self.root_ang_vel_b(opponent)[:, :2], dim=-1)
+        opp_tilt = torch.relu(1.0 - self._up_z[opponent])
+        topple_pressure = force_term * physical_contact_gate * (
+            0.50 * torch.clamp(opp_lateral_ang_vel / 4.0, 0.0, 2.0)
+            + torch.clamp(opp_tilt / max(1.0 - self.cfg.rules.knockdown_up_axis_z, 1.0e-6), 0.0, 2.0)
+        )
+        opp_drive_speed = torch.relu(torch.sum(self.root_lin_vel_w(opponent)[:, :2] * rel_dir[:, :2], dim=-1))
+        drive_pressure = (
+            force_term
+            * strike_speed_term
+            * physical_contact_gate
+            * torch.clamp(opp_drive_speed / self.cfg.contact.strike_speed_normalizer, 0.0, 2.0)
+        )
+        support_break_pressure = self._support_break_pressure_term(opponent, force_term, physical_contact_gate)
         training_contact_gate = torch.maximum(physical_contact_gate, (contact_proxy > 0.05).float() * close_to_opponent)
         self._useful_contact[agent] = torch.clamp(
             force_term,
@@ -574,12 +617,18 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._attack_momentum[agent] = attack_momentum
         self._strike_speed[agent] = strike_speed * attribution
         self._destabilizing_impact[agent] = destabilizing_impact
+        self._topple_pressure[agent] = topple_pressure
+        self._drive_pressure[agent] = drive_pressure
+        self._support_break_pressure[agent] = support_break_pressure
         self._opponent_destabilization[agent] = destabilization_signal
         self._proof_contact[agent] = torch.clamp(self._eval_contact_force[agent] / self.cfg.contact.force_normalizer, 0.0, 5.0) * physical_contact_gate
         self._proof_destabilization[agent] = self._opponent_destabilization[agent] * physical_contact_gate
         self._proof_impact[agent] = (
             self._proof_contact[agent]
             + self._destabilizing_impact[agent]
+            + self._topple_pressure[agent]
+            + self._drive_pressure[agent]
+            + self._support_break_pressure[agent]
             + self._proof_destabilization[agent]
             + self._new_knockdown[opponent].float() * physical_contact_gate
         )
@@ -663,6 +712,30 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 )
         return torch.zeros(self.num_envs, device=self.device)
 
+    def _support_break_pressure_term(
+        self,
+        opponent: str,
+        force_term: torch.Tensor,
+        physical_contact_gate: torch.Tensor,
+    ) -> torch.Tensor:
+        robot = self.robots[opponent]
+        body_pos_w = getattr(robot.data, "body_pos_w", None)
+        support_ids = self._support_body_ids.get(opponent, [])
+        if body_pos_w is None or not support_ids:
+            return torch.zeros(self.num_envs, device=self.device)
+
+        support_pos = body_pos_w[:, support_ids, :2]
+        support_center = support_pos.mean(dim=1)
+        support_radius = torch.linalg.norm(support_pos - support_center.unsqueeze(1), dim=-1).amax(dim=-1)
+        root_xy = self.root_pos_w(opponent)[:, :2]
+        root_from_support = root_xy - support_center
+        root_support_distance = torch.linalg.norm(root_from_support, dim=-1)
+        support_escape = torch.clamp((root_support_distance - support_radius) / 0.35, 0.0, 2.0)
+        support_dir = root_from_support / torch.clamp(root_support_distance.unsqueeze(-1), min=1.0e-6)
+        support_drive_speed = torch.relu(torch.sum(self.root_lin_vel_w(opponent)[:, :2] * support_dir, dim=-1))
+        support_drive = torch.clamp(support_drive_speed / self.cfg.contact.strike_speed_normalizer, 0.0, 2.0)
+        return force_term * physical_contact_gate * (support_escape + 0.50 * support_drive)
+
     def _ground_or_scene_contact_force(self, agent: str) -> torch.Tensor:
         body_forces = getattr(self.robots[agent].data, "body_net_forces_w", None)
         if body_forces is None:
@@ -691,6 +764,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             "attack_momentum": 0.0,
             "strike_speed": 0.0,
             "destabilizing_impact": 0.0,
+            "topple_pressure": 0.0,
+            "drive_pressure": 0.0,
+            "support_break_pressure": 0.0,
             "candidate_body_contact_force": 0.0,
             "opponent_contact_attribution": 0.0,
             "real_opponent_contact_force": 0.0,
@@ -748,6 +824,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                     "Match/avg_attack_momentum": float(self._attack_momentum[agent][env_ids].mean().item()),
                     "Match/avg_strike_speed": float(self._strike_speed[agent][env_ids].mean().item()),
                     "Match/avg_destabilizing_impact": float(self._destabilizing_impact[agent][env_ids].mean().item()),
+                    "Match/avg_topple_pressure": float(self._topple_pressure[agent][env_ids].mean().item()),
+                    "Match/avg_drive_pressure": float(self._drive_pressure[agent][env_ids].mean().item()),
+                    "Match/avg_support_break_pressure": float(self._support_break_pressure[agent][env_ids].mean().item()),
                     "Match/proof_impact": float(self._proof_impact[agent][env_ids].mean().item()),
                     "Match/avg_energy_use": float(self._energy_ema[agent][env_ids].mean().item()),
                     "Match/score": score,
@@ -794,6 +873,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 "attack_momentum": float(self._attack_momentum[agent][idx].detach().cpu().item()),
                 "strike_speed": float(self._strike_speed[agent][idx].detach().cpu().item()),
                 "destabilizing_impact": float(self._destabilizing_impact[agent][idx].detach().cpu().item()),
+                "topple_pressure": float(self._topple_pressure[agent][idx].detach().cpu().item()),
+                "drive_pressure": float(self._drive_pressure[agent][idx].detach().cpu().item()),
+                "support_break_pressure": float(self._support_break_pressure[agent][idx].detach().cpu().item()),
                 "proof_contact": float(self._proof_contact[agent][idx].detach().cpu().item()),
                 "proof_impact": float(self._proof_impact[agent][idx].detach().cpu().item()),
                 "knockdown": bool(self._knockdown[agent][idx].detach().cpu().item()),

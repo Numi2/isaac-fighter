@@ -35,6 +35,9 @@ DEFAULT_TAGS = (
     "Info / Combat/mean_attack_momentum",
     "Info / Combat/mean_strike_speed",
     "Info / Combat/mean_destabilizing_impact",
+    "Info / Combat/mean_topple_pressure",
+    "Info / Combat/mean_drive_pressure",
+    "Info / Combat/mean_support_break_pressure",
     "Info / Combat/mean_candidate_body_contact_force",
     "Info / Combat/mean_opponent_contact_attribution",
     "Info / Combat/mean_real_opponent_contact_force",
@@ -130,6 +133,14 @@ def _summarize_tournament(path: Path) -> dict[str, Any]:
             float(m.get("destabilizing_impact_fighter_a", 0.0)) + float(m.get("destabilizing_impact_fighter_b", 0.0)) for m in matches
         )
         / (2.0 * len(matches)),
+        "mean_topple_pressure": sum(float(m.get("topple_pressure_fighter_a", 0.0)) + float(m.get("topple_pressure_fighter_b", 0.0)) for m in matches)
+        / (2.0 * len(matches)),
+        "mean_drive_pressure": sum(float(m.get("drive_pressure_fighter_a", 0.0)) + float(m.get("drive_pressure_fighter_b", 0.0)) for m in matches)
+        / (2.0 * len(matches)),
+        "mean_support_break_pressure": sum(
+            float(m.get("support_break_pressure_fighter_a", 0.0)) + float(m.get("support_break_pressure_fighter_b", 0.0)) for m in matches
+        )
+        / (2.0 * len(matches)),
         "mean_opponent_contact_attribution": sum(
             float(m.get("opponent_contact_attribution_fighter_a", 0.0)) + float(m.get("opponent_contact_attribution_fighter_b", 0.0))
             for m in matches
@@ -160,6 +171,9 @@ def _summarize_replay(path: Path) -> dict[str, Any]:
     attack_samples = []
     strike_samples = []
     impact_samples = []
+    topple_samples = []
+    drive_samples = []
+    support_break_samples = []
     knockdowns = 0
     for step in steps:
         for agent in ("fighter_a", "fighter_b"):
@@ -172,6 +186,9 @@ def _summarize_replay(path: Path) -> dict[str, Any]:
             attack_samples.append(float(fighter.get("attack_momentum", 0.0)))
             strike_samples.append(float(fighter.get("strike_speed", 0.0)))
             impact_samples.append(float(fighter.get("destabilizing_impact", 0.0)))
+            topple_samples.append(float(fighter.get("topple_pressure", 0.0)))
+            drive_samples.append(float(fighter.get("drive_pressure", 0.0)))
+            support_break_samples.append(float(fighter.get("support_break_pressure", 0.0)))
             knockdowns += int(bool(fighter.get("knockdown", False)))
     return {
         "steps": len(steps),
@@ -184,6 +201,9 @@ def _summarize_replay(path: Path) -> dict[str, Any]:
         "mean_attack_momentum": sum(attack_samples) / max(len(attack_samples), 1),
         "mean_strike_speed": sum(strike_samples) / max(len(strike_samples), 1),
         "mean_destabilizing_impact": sum(impact_samples) / max(len(impact_samples), 1),
+        "mean_topple_pressure": sum(topple_samples) / max(len(topple_samples), 1),
+        "mean_drive_pressure": sum(drive_samples) / max(len(drive_samples), 1),
+        "mean_support_break_pressure": sum(support_break_samples) / max(len(support_break_samples), 1),
         "knockdown_frames": knockdowns,
         "final_winner": int(steps[-1].get("winner", 0)),
     }
