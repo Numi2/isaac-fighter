@@ -119,6 +119,8 @@ def main(env_cfg, agent_cfg):  # noqa: ANN001, ARG001
                         "ground_contact_force_fighter_b": float(env.unwrapped._ground_contact_force[FIGHTER_B].mean().item()),
                         "proxy_engagement_fighter_a": float(env.unwrapped._proxy_engagement[FIGHTER_A].mean().item()),
                         "proxy_engagement_fighter_b": float(env.unwrapped._proxy_engagement[FIGHTER_B].mean().item()),
+                        "training_contact_force_fighter_a": float(env.unwrapped._training_contact_force[FIGHTER_A].mean().item()),
+                        "training_contact_force_fighter_b": float(env.unwrapped._training_contact_force[FIGHTER_B].mean().item()),
                         "eval_contact_force_fighter_a": float(env.unwrapped._eval_contact_force[FIGHTER_A].mean().item()),
                         "eval_contact_force_fighter_b": float(env.unwrapped._eval_contact_force[FIGHTER_B].mean().item()),
                         "proof_impact_fighter_a": float(env.unwrapped._proof_impact[FIGHTER_A].mean().item()),

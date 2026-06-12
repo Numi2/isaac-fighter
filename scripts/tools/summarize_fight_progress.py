@@ -37,6 +37,7 @@ DEFAULT_TAGS = (
     "Info / Combat/mean_real_opponent_contact_force",
     "Info / Combat/mean_ground_contact_force",
     "Info / Combat/mean_proxy_engagement",
+    "Info / Combat/mean_training_contact_force",
     "Info / Combat/mean_eval_contact_force",
     "Info / Combat/mean_opponent_destabilization",
     "Info / Combat/mean_proof_contact",
@@ -109,6 +110,10 @@ def _summarize_tournament(path: Path) -> dict[str, Any]:
             for m in matches
         )
         / (2.0 * len(matches)),
+        "mean_training_contact_force": sum(
+            float(m.get("training_contact_force_fighter_a", 0.0)) + float(m.get("training_contact_force_fighter_b", 0.0)) for m in matches
+        )
+        / (2.0 * len(matches)),
         "mean_candidate_body_contact_force": sum(
             float(m.get("candidate_body_contact_force_fighter_a", 0.0)) + float(m.get("candidate_body_contact_force_fighter_b", 0.0))
             for m in matches
@@ -137,6 +142,7 @@ def _summarize_replay(path: Path) -> dict[str, Any]:
     if not steps:
         return {"steps": 0}
     contact_samples = []
+    training_contact_samples = []
     candidate_samples = []
     attribution_samples = []
     proof_samples = []
@@ -146,6 +152,7 @@ def _summarize_replay(path: Path) -> dict[str, Any]:
             fighter = step.get(agent, {})
             candidate_samples.append(float(fighter.get("candidate_body_contact_force", 0.0)))
             attribution_samples.append(float(fighter.get("opponent_contact_attribution", 0.0)))
+            training_contact_samples.append(float(fighter.get("training_contact_force", 0.0)))
             contact_samples.append(float(fighter.get("eval_contact_force", fighter.get("sensor_contact_force", fighter.get("contact_force", 0.0)))))
             proof_samples.append(float(fighter.get("proof_impact", 0.0)))
             knockdowns += int(bool(fighter.get("knockdown", False)))
@@ -154,6 +161,7 @@ def _summarize_replay(path: Path) -> dict[str, Any]:
         "last_time_s": float(steps[-1].get("time_s", 0.0)),
         "mean_candidate_body_contact_force": sum(candidate_samples) / max(len(candidate_samples), 1),
         "mean_opponent_contact_attribution": sum(attribution_samples) / max(len(attribution_samples), 1),
+        "mean_training_contact_force": sum(training_contact_samples) / max(len(training_contact_samples), 1),
         "mean_eval_contact_force": sum(contact_samples) / max(len(contact_samples), 1),
         "mean_proof_impact": sum(proof_samples) / max(len(proof_samples), 1),
         "knockdown_frames": knockdowns,

@@ -9,10 +9,10 @@ logic: it only replaces an opponent action tensor with the output of a sampled p
 
 from __future__ import annotations
 
-import os
-import random
 import re
 import shutil
+import threading
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -21,7 +21,7 @@ import gymnasium as gym
 import torch
 from torch import nn
 
-from .fighter_ids import FIGHTER_A, FIGHTER_B, opponent_of
+from .fighter_ids import FIGHTER_A, FIGHTER_B, FIGHTERS, opponent_of
 from .opponent_pool import OpponentPool, OpponentSample
 
 
@@ -131,13 +131,49 @@ class SelfPlayTrainingSupervisor:
             if resolved != pooled_path.resolve():
                 shutil.copy2(candidate, pooled_path)
             tags = ("skrl",) if _looks_like_skrl_checkpoint(candidate) else ("torchscript",)
-            self.pool.add_checkpoint(pooled_path, version=version, elo=self.active_elo, tags=tags, metadata=self.metadata or {})
+            policy_id = f"{run_name}_v{version:06d}" if run_name else f"policy_v{version:06d}"
+            metadata = dict(self.metadata or {})
+            metadata.setdefault("source_run", run_name)
+            metadata.setdefault("source_checkpoint", candidate.name)
+            self.pool.add_checkpoint(pooled_path, version=version, policy_id=policy_id, elo=self.active_elo, tags=tags, metadata=metadata)
             known_paths.add(pooled_path.resolve())
             added += 1
         return added
 
     def sample(self, active_elo: float | None = None) -> OpponentSample | None:
         return self.pool.sample(active_elo=active_elo if active_elo is not None else self.active_elo)
+
+
+class LiveSelfPlayPoolSync:
+    """Background checkpoint sync so long training runs do not depend on a separate sidecar process."""
+
+    def __init__(self, supervisor: SelfPlayTrainingSupervisor, interval_s: float = 60.0):
+        self.supervisor = supervisor
+        self.interval_s = max(1.0, float(interval_s))
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, name="isaac-fight-pool-sync", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> int:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=10.0)
+        return self.supervisor.sync_checkpoints()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                added = self.supervisor.sync_checkpoints()
+                if added:
+                    print(f"[INFO] Live self-play pool sync added {added} checkpoint(s).", flush=True)
+            except Exception:  # noqa: BLE001 - keep training alive if the pool fs hiccups.
+                print("[WARN] Live self-play pool sync failed:\n" + traceback.format_exc(), flush=True)
+            self._stop.wait(self.interval_s)
 
 
 class HistoricalOpponentActionWrapper(gym.Wrapper):
@@ -160,6 +196,7 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         latest_bias: float = 0.15,
         update_interval_steps: int = 1000,
         side_swap_probability: float = 0.5,
+        live_self_play_fraction: float = 0.25,
         train_active_only: bool = True,
     ):
         super().__init__(env)
@@ -174,15 +211,18 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         self.latest_bias = latest_bias
         self.update_interval_steps = max(1, int(update_interval_steps))
         self.side_swap_probability = max(0.0, min(1.0, float(side_swap_probability)))
+        self.live_self_play_fraction = max(0.0, min(1.0, float(live_self_play_fraction)))
         self.train_active_only = train_active_only
         self._last_obs: dict[str, torch.Tensor] | None = None
         self._current_sample: OpponentSample | None = None
-        self._backend: PolicyBackend | None = None
+        self._backends: dict[str, PolicyBackend] = {}
+        self._active_masks: dict[str, torch.Tensor] = {}
+        self._freeze_masks: dict[str, torch.Tensor] = {}
         self._step_count = 0
 
     def reset(self, **kwargs):  # noqa: ANN003
         obs, info = self.env.reset(**kwargs)
-        self._select_active_side()
+        self._initialize_vectorized_masks(obs)
         self._last_obs = obs
         self._sample_backend()
         return obs, info
@@ -191,14 +231,37 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         self._step_count += 1
         if self._step_count % self.update_interval_steps == 0:
             self._sample_backend()
-        if self._backend is not None and self._last_obs is not None and self.opponent_agent in self._last_obs:
+        overwritten_masks: dict[str, torch.Tensor] = {}
+        if self._backends and self._last_obs is not None:
             actions = dict(actions)
-            actions[self.opponent_agent] = self._backend.act(self._last_obs[self.opponent_agent])
+            for agent, backend in self._backends.items():
+                if agent not in self._last_obs:
+                    continue
+                mask = self._freeze_masks.get(agent)
+                if mask is None or not bool(mask.any().item()):
+                    continue
+                frozen_actions = backend.act(self._last_obs[agent])
+                if frozen_actions.shape != actions[agent].shape:
+                    print(
+                        f"[WARN] Frozen opponent action shape mismatch for {agent}: "
+                        f"got {tuple(frozen_actions.shape)}, expected {tuple(actions[agent].shape)}",
+                        flush=True,
+                    )
+                    continue
+                mixed_actions = actions[agent].clone()
+                mixed_actions[mask] = frozen_actions[mask]
+                actions[agent] = mixed_actions
+                overwritten_masks[agent] = mask
         obs, rewards, terminated, truncated, infos = self.env.step(actions)
-        if self.train_active_only and self._backend is not None and self.opponent_agent in rewards:
+        if self.train_active_only and overwritten_masks:
             rewards = dict(rewards)
-            rewards[self.opponent_agent] = torch.zeros_like(rewards[self.opponent_agent])
+            for agent, mask in overwritten_masks.items():
+                if agent in rewards:
+                    rewards[agent] = torch.where(mask, torch.zeros_like(rewards[agent]), rewards[agent])
         self._last_obs = obs
+        if FIGHTER_A in terminated and FIGHTER_A in truncated:
+            done = terminated[FIGHTER_A] | truncated[FIGHTER_A]
+            self._resample_vectorized_masks(done)
         if hasattr(self.env.unwrapped, "extras"):
             extras = self.env.unwrapped.extras
             for agent_info in extras.values():
@@ -208,8 +271,13 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
                 if self._current_sample is not None:
                     agent_info["self_play"].update(
                         {
-                            "active_agent": self.active_agent,
-                            "frozen_agent": self.opponent_agent,
+                            "active_agent": "mixed",
+                            "frozen_agent": "mixed",
+                            "active_fraction_fighter_a": self._active_fraction(FIGHTER_A),
+                            "active_fraction_fighter_b": self._active_fraction(FIGHTER_B),
+                            "frozen_fraction_fighter_a": self._freeze_fraction(FIGHTER_A),
+                            "frozen_fraction_fighter_b": self._freeze_fraction(FIGHTER_B),
+                            "live_self_play_fraction": self.live_self_play_fraction,
                             "opponent_policy_id": self._current_sample.policy.policy_id,
                             "opponent_version": self._current_sample.policy.version,
                             "opponent_elo": self._current_sample.policy.elo,
@@ -227,23 +295,54 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
             latest_bias=self.latest_bias,
         )
         self._current_sample = sample
-        self._backend = None
+        self._backends = {}
         if sample is None:
             return
         path = Path(sample.policy.checkpoint_path)
         if not path.exists():
             return
-        if "skrl" in sample.policy.tags or _looks_like_skrl_checkpoint(path):
-            self._backend = SkrlCheckpointPolicyBackend(path, agent_id=self.opponent_agent, device=self.device)
-        elif "torchscript" in sample.policy.tags:
-            self._backend = TorchScriptPolicyBackend(path, device=self.device)
+        for agent in FIGHTERS:
+            try:
+                if "skrl" in sample.policy.tags or _looks_like_skrl_checkpoint(path):
+                    self._backends[agent] = SkrlCheckpointPolicyBackend(path, agent_id=agent, device=self.device)
+                elif "torchscript" in sample.policy.tags:
+                    self._backends[agent] = TorchScriptPolicyBackend(path, device=self.device)
+            except Exception as exc:  # noqa: BLE001 - skip incompatible legacy pool entries.
+                print(f"[WARN] Could not load frozen opponent backend for {agent} from {path}: {exc}", flush=True)
 
-    def _select_active_side(self) -> None:
-        if random.random() < self.side_swap_probability:
-            self.active_agent = opponent_of(self.base_active_agent)
-        else:
-            self.active_agent = self.base_active_agent
-        self.opponent_agent = opponent_of(self.active_agent)
+    def _initialize_vectorized_masks(self, obs: dict[str, torch.Tensor]) -> None:
+        sample_obs = next(iter(obs.values()))
+        n = sample_obs.shape[0]
+        device = sample_obs.device
+        self._active_masks = {agent: torch.zeros(n, dtype=torch.bool, device=device) for agent in FIGHTERS}
+        self._freeze_masks = {agent: torch.zeros(n, dtype=torch.bool, device=device) for agent in FIGHTERS}
+        self._resample_vectorized_masks(torch.ones(n, dtype=torch.bool, device=device))
+
+    def _resample_vectorized_masks(self, env_mask: torch.Tensor) -> None:
+        if not self._active_masks:
+            return
+        env_mask = env_mask.to(next(iter(self._active_masks.values())).device)
+        if not bool(env_mask.any().item()):
+            return
+        n = int(env_mask.sum().item())
+        base_device = env_mask.device
+        swapped = torch.rand(n, device=base_device) < self.side_swap_probability
+        use_frozen = torch.rand(n, device=base_device) >= self.live_self_play_fraction
+        active_a = torch.full((n,), self.base_active_agent == FIGHTER_A, dtype=torch.bool, device=base_device)
+        active_a = torch.where(swapped, ~active_a, active_a)
+        active_b = ~active_a
+        self._active_masks[FIGHTER_A][env_mask] = active_a
+        self._active_masks[FIGHTER_B][env_mask] = active_b
+        self._freeze_masks[FIGHTER_A][env_mask] = active_b & use_frozen
+        self._freeze_masks[FIGHTER_B][env_mask] = active_a & use_frozen
+
+    def _active_fraction(self, agent: str) -> float:
+        mask = self._active_masks.get(agent)
+        return float(mask.float().mean().item()) if mask is not None and mask.numel() else 0.0
+
+    def _freeze_fraction(self, agent: str) -> float:
+        mask = self._freeze_masks.get(agent)
+        return float(mask.float().mean().item()) if mask is not None and mask.numel() else 0.0
 
 
 def _version_from_path(path: Path) -> int:
@@ -292,6 +391,7 @@ def maybe_wrap_historical_opponent(env: gym.Env, cfg, log_dir: str | Path | None
         latest_bias=cfg.self_play.latest_bias,
         update_interval_steps=getattr(cfg.self_play, "opponent_update_interval", 1000),
         side_swap_probability=getattr(cfg.self_play, "side_swap_probability", 0.5),
+        live_self_play_fraction=getattr(cfg.self_play, "live_self_play_fraction", 0.25),
         train_active_only=True,
     )
 

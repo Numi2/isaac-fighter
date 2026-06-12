@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import hashlib
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -115,6 +116,7 @@ class OpponentPool:
             version = 0 if not self._policies else max(p.version for p in self._policies.values()) + 1
         if policy_id is None:
             policy_id = f"policy_v{version:06d}"
+        policy_id = self._dedupe_policy_id(policy_id, checkpoint)
         record = PolicyVersion(
             policy_id=policy_id,
             checkpoint_path=str(checkpoint),
@@ -126,6 +128,24 @@ class OpponentPool:
         self._policies[record.policy_id] = record
         self.save()
         return record
+
+    def _dedupe_policy_id(self, policy_id: str, checkpoint: Path) -> str:
+        existing = self._policies.get(policy_id)
+        if existing is None:
+            return policy_id
+        try:
+            if Path(existing.checkpoint_path).resolve() == checkpoint.resolve():
+                return policy_id
+        except OSError:
+            if existing.checkpoint_path == str(checkpoint):
+                return policy_id
+        digest = hashlib.sha1(str(checkpoint.resolve()).encode("utf-8")).hexdigest()[:10]
+        candidate = f"{policy_id}_{digest}"
+        counter = 1
+        while candidate in self._policies:
+            counter += 1
+            candidate = f"{policy_id}_{digest}_{counter}"
+        return candidate
 
     def update_result(self, policy_id: str, result: float, elo: float | None = None) -> None:
         policy = self._policies[policy_id]

@@ -32,6 +32,10 @@ parser.add_argument("--no_historical_opponent", action="store_false", dest="hist
 parser.add_argument("--active_agent", type=str, default="fighter_a", choices=["fighter_a", "fighter_b"])
 parser.add_argument("--pool_dir", type=str, default="policy_pool")
 parser.add_argument("--snapshot_interval", type=int, default=50)
+parser.add_argument("--pool_sync_interval_s", type=float, default=60.0)
+parser.add_argument("--opponent_update_interval", type=int, default=None)
+parser.add_argument("--side_swap_probability", type=float, default=None)
+parser.add_argument("--live_self_play_fraction", type=float, default=None)
 parser.add_argument("--export_io_descriptors", action="store_true", default=False)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -67,6 +71,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import isaac_fight.tasks  # noqa: F401
 from isaac_fight.tasks.direct.unitree_1v1.self_play import (
+    LiveSelfPlayPoolSync,
     SelfPlayTrainingSupervisor,
     checkpoint_dir_from_log_dir,
     maybe_wrap_historical_opponent,
@@ -105,6 +110,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.self_play.pool_dir = args_cli.pool_dir
         env_cfg.self_play.snapshot_interval = args_cli.snapshot_interval
         env_cfg.self_play.active_agent = args_cli.active_agent
+        if args_cli.opponent_update_interval is not None:
+            env_cfg.self_play.opponent_update_interval = args_cli.opponent_update_interval
+        if args_cli.side_swap_probability is not None:
+            env_cfg.self_play.side_swap_probability = args_cli.side_swap_probability
+        if args_cli.live_self_play_fraction is not None:
+            env_cfg.self_play.live_self_play_fraction = args_cli.live_self_play_fraction
 
     log_root_path = os.path.abspath(os.path.join("logs", "skrl", agent_cfg["agent"]["experiment"]["directory"]))
     log_dir_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + f"_{algorithm}_{args_cli.ml_framework}"
@@ -115,6 +126,46 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_dir = os.path.join(log_root_path, log_dir_name)
     env_cfg.log_dir = log_dir
     print(f"[INFO] Logging experiment in directory: {log_dir}")
+
+    pool_sync: LiveSelfPlayPoolSync | None = None
+    pool_metadata = None
+    if args_cli.self_play and hasattr(env_cfg, "fighter_a"):
+        pool_metadata = {
+            "framework": args_cli.ml_framework,
+            "algorithm": algorithm.upper(),
+            "task": args_cli.task,
+            "seed": args_cli.seed,
+            "reward_version": "combat_flywheel_v1",
+            "config_hash": hashlib.sha256(
+                json.dumps(
+                    {
+                        "fighter_a": env_cfg.fighter_a.robot_name,
+                        "fighter_b": env_cfg.fighter_b.robot_name,
+                        "action_spaces": env_cfg.action_spaces,
+                        "observation_spaces": env_cfg.observation_spaces,
+                        "rewards": vars(env_cfg.rewards),
+                        "contact": vars(env_cfg.contact),
+                        "self_play": vars(env_cfg.self_play),
+                    },
+                    sort_keys=True,
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()[:16],
+            "agents": {
+                "fighter_a": {
+                    "side": "fighter_a",
+                    "robot": env_cfg.fighter_a.robot_name,
+                    "action_dim": env_cfg.action_spaces["fighter_a"],
+                    "obs_dim": env_cfg.observation_spaces["fighter_a"],
+                },
+                "fighter_b": {
+                    "side": "fighter_b",
+                    "robot": env_cfg.fighter_b.robot_name,
+                    "action_dim": env_cfg.action_spaces["fighter_b"],
+                    "obs_dim": env_cfg.observation_spaces["fighter_b"],
+                },
+            },
+        }
 
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
@@ -145,55 +196,31 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print(f"[INFO] Loading checkpoint: {resume_path}")
         runner.agent.load(resume_path)
 
-    start = time.time()
-    runner.run()
-    print(f"[INFO] Training time: {time.time() - start:.2f} s")
-
+    supervisor = None
     if args_cli.self_play:
-        checkpoint_dir = checkpoint_dir_from_log_dir(log_dir)
-        pool_metadata = {
-            "framework": args_cli.ml_framework,
-            "algorithm": algorithm.upper(),
-            "task": args_cli.task,
-            "seed": args_cli.seed,
-            "reward_version": "combat_proof_v3_attributed_contact",
-            "config_hash": hashlib.sha256(
-                json.dumps(
-                    {
-                        "fighter_a": env_cfg.fighter_a.robot_name,
-                        "fighter_b": env_cfg.fighter_b.robot_name,
-                        "action_spaces": env_cfg.action_spaces,
-                        "observation_spaces": env_cfg.observation_spaces,
-                        "rewards": vars(env_cfg.rewards),
-                        "contact": vars(env_cfg.contact),
-                    },
-                    sort_keys=True,
-                    default=str,
-                ).encode("utf-8")
-            ).hexdigest()[:16],
-            "agents": {
-                "fighter_a": {
-                    "side": "fighter_a",
-                    "robot": env_cfg.fighter_a.robot_name,
-                    "action_dim": env_cfg.action_spaces["fighter_a"],
-                    "obs_dim": env_cfg.observation_spaces["fighter_a"],
-                },
-                "fighter_b": {
-                    "side": "fighter_b",
-                    "robot": env_cfg.fighter_b.robot_name,
-                    "action_dim": env_cfg.action_spaces["fighter_b"],
-                    "obs_dim": env_cfg.observation_spaces["fighter_b"],
-                },
-            },
-        }
         supervisor = SelfPlayTrainingSupervisor(
             pool_dir=args_cli.pool_dir,
-            checkpoint_dir=checkpoint_dir,
+            checkpoint_dir=checkpoint_dir_from_log_dir(log_dir),
             snapshot_interval=args_cli.snapshot_interval,
             metadata=pool_metadata,
         )
-        added = supervisor.sync_checkpoints()
-        print(f"[INFO] Self-play pool synchronized. Added {added} checkpoint(s) to {Path(args_cli.pool_dir).resolve()}")
+        if args_cli.pool_sync_interval_s > 0.0:
+            pool_sync = LiveSelfPlayPoolSync(supervisor, interval_s=args_cli.pool_sync_interval_s)
+            pool_sync.start()
+
+    start = time.time()
+    final_sync_added = 0
+    try:
+        runner.run()
+    finally:
+        if pool_sync is not None:
+            final_sync_added = pool_sync.stop()
+        elif supervisor is not None:
+            final_sync_added = supervisor.sync_checkpoints()
+    print(f"[INFO] Training time: {time.time() - start:.2f} s")
+
+    if args_cli.self_play:
+        print(f"[INFO] Self-play pool synchronized. Added {final_sync_added} checkpoint(s) to {Path(args_cli.pool_dir).resolve()}")
 
     env.close()
 

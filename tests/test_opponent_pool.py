@@ -19,3 +19,20 @@ def test_pool_add_save_load_and_sample(tmp_path: Path):
     assert sample is not None
     assert sample.policy.policy_id == record.policy_id
     assert 0.0 < sample.probability <= 1.0
+
+
+def test_pool_ids_do_not_collide_for_same_checkpoint_number(tmp_path: Path):
+    ckpt_a = tmp_path / "run_a" / "agent_000050.pt"
+    ckpt_b = tmp_path / "run_b" / "agent_000050.pt"
+    ckpt_a.parent.mkdir()
+    ckpt_b.parent.mkdir()
+    ckpt_a.write_bytes(b"a")
+    ckpt_b.write_bytes(b"b")
+
+    pool = OpponentPool(tmp_path / "pool")
+    first = pool.add_checkpoint(ckpt_a, version=50)
+    second = pool.add_checkpoint(ckpt_b, version=50)
+
+    assert first.policy_id == "policy_v000050"
+    assert second.policy_id != first.policy_id
+    assert len(pool) == 2

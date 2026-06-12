@@ -25,9 +25,10 @@ Achieved:
 - Fight rules: arena bounds, randomized facing spawns, fall/knockdown/knockout logic, timer decision, winner/loser/draw assignment.
 - Combat shaping: approach pressure, useful contact, destabilization, knockdown reward, stability, efficiency, boundary discipline, terminal outcome terms.
 - skrl IPPO/MAPPO configs aligned with Isaac Lab 2.3 runner schema.
-- 8192-env Isaac Launchable self-play resumed from live checkpoints with persistent pool sync.
-- TensorBoard combat telemetry: useful contact, candidate body contact force, attributed opponent contact force, ground/scene force, proxy engagement, proof impact, destabilization, knockdown events, inactivity, spin-without-contact, win/loss/draw, score.
-- Proof layer split: `contact_intent` and `proxy_engagement` are training-only exploration signals. Raw non-foot body contact is logged as a candidate signal; tournament scoring, timer decisions, Elo evidence, and proof metrics use the stricter attributed opponent-contact channel plus impact-gated destabilization.
+- 8192-env Isaac Launchable self-play resumed from live checkpoints with persistent in-process pool sync.
+- Mixed vectorized self-play: each rollout can include fighter A active vs frozen B, fighter B active vs frozen A, and live current-vs-current envs.
+- TensorBoard combat telemetry: useful contact, training contact force, candidate body contact force, attributed opponent contact force, ground/scene force, proxy engagement, proof impact, destabilization, knockdown events, inactivity, spin-without-contact, win/loss/draw, score.
+- Training contact uses the configured proxy fallback to jumpstart engagement when clean contact attribution is sparse. Proof metrics remain separate telemetry.
 
 Next:
 
@@ -61,7 +62,7 @@ cd /path/to/IsaacLab
   --headless
 ```
 
-Self-play is closed-loop by default: checkpoints are synced into `policy_pool`, and when compatible pool policies exist one side is overwritten by a frozen historical policy sampled by Elo range, weakness, and recency. The active side is swapped during training to reduce side bias. Cold starts fall back to symmetric IPPO until the first pool policies exist. Use `--no_historical_opponent` only for ablations.
+Self-play is closed-loop by default: checkpoints are synced into `policy_pool` during training, and compatible pool policies are sampled by Elo range, weakness, and recency. Vectorized envs are mixed so both fighter sides train against frozen historical policies in the same rollout, while a live current-vs-current fraction keeps co-adaptation moving. Cold starts fall back to symmetric IPPO until the first pool policies exist. Use `--no_historical_opponent` only for ablations.
 
 Keep the pool synchronized while long training runs continue:
 
