@@ -1,5 +1,5 @@
 # Isaac Fight
-
+sequal to the ghostfighter series
 Standalone Isaac Lab extension for emergent 1v1 humanoid combat.
 
 ![G1 self-play visual milestone](docs/assets/g1-self-play-milestone-agent3072.gif)
