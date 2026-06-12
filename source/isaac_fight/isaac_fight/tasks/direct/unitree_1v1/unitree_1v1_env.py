@@ -263,6 +263,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._score = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._prev_distance_to_opponent = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._prev_root_height = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._prev_root_lin_vel_w = {agent: torch.zeros(n, 3, device=device) for agent in FIGHTERS}
         self._prev_up_z = {agent: torch.ones(n, device=device) for agent in FIGHTERS}
         self._no_engagement_clock = torch.zeros(n, device=device)
 
@@ -473,6 +474,12 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._energy[agent][env_ids] = 0.0
             self._energy_ema[agent][env_ids] = 0.0
             self._score[agent][env_ids] = 0.0
+            opponent = opponent_of(agent)
+            distance = torch.linalg.norm((self.root_pos(opponent) - self.root_pos(agent))[env_ids, :2], dim=-1)
+            self._prev_distance_to_opponent[agent][env_ids] = distance.detach()
+            self._prev_root_height[agent][env_ids] = self.root_pos(agent)[env_ids, 2].detach()
+            self._prev_root_lin_vel_w[agent][env_ids] = self.root_lin_vel_w(agent)[env_ids].detach()
+            self._prev_up_z[agent][env_ids] = self._rule_engine.up_axis_z(self.root_quat(agent))[env_ids].detach()
             for tensor in self._episode_sums[agent].values():
                 tensor[env_ids] = 0.0
             self._episode_counts[agent][env_ids] = 0.0
@@ -546,6 +553,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 continue
             self._prev_distance_to_opponent[agent] = distance.detach()
             self._prev_root_height[agent] = self.root_pos(agent)[:, 2].detach()
+            self._prev_root_lin_vel_w[agent] = self.root_lin_vel_w(agent).detach()
             self._prev_up_z[agent] = self._up_z[agent].detach()
 
     def _update_contact_and_effort(self, agent: str, opponent: str) -> None:
@@ -599,12 +607,18 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             0.50 * torch.clamp(opp_lateral_ang_vel / 4.0, 0.0, 2.0)
             + torch.clamp(opp_tilt / max(1.0 - self.cfg.rules.knockdown_up_axis_z, 1.0e-6), 0.0, 2.0)
         )
+        opp_velocity_delta = self.root_lin_vel_w(opponent) - self._prev_root_lin_vel_w[opponent]
         opp_drive_speed = torch.relu(torch.sum(self.root_lin_vel_w(opponent)[:, :2] * rel_dir[:, :2], dim=-1))
+        opp_drive_impulse = torch.relu(torch.sum(opp_velocity_delta[:, :2] * rel_dir[:, :2], dim=-1))
         drive_pressure = (
             force_term
             * strike_speed_term
             * physical_contact_gate
-            * torch.clamp(opp_drive_speed / self.cfg.contact.strike_speed_normalizer, 0.0, 2.0)
+            * torch.clamp(
+                (opp_drive_speed + 2.0 * opp_drive_impulse) / self.cfg.contact.strike_speed_normalizer,
+                0.0,
+                3.0,
+            )
         )
         support_break_pressure = self._support_break_pressure_term(opponent, force_term, physical_contact_gate)
         training_contact_gate = torch.maximum(physical_contact_gate, (contact_proxy > 0.05).float() * close_to_opponent)
