@@ -81,6 +81,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._support_body_id_tensors: dict[str, torch.Tensor] = {}
         self._upper_contact_body_id_tensors: dict[str, torch.Tensor] = {}
         self._strike_body_id_tensors: dict[str, torch.Tensor] = {}
+        self._waist_action_id_tensors: dict[str, torch.Tensor] = {}
         self._resolve_controlled_joints()
         self._allocate_buffers()
         self._configure_replay()
@@ -194,6 +195,10 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 action_dim=action_dim,
                 default_base_height=spec.default_base_height,
                 action_scale=float(scale),
+            )
+            waist_action_ids = [idx for idx, name in enumerate(resolved_names) if "waist" in name.lower()]
+            self._waist_action_id_tensors[agent] = torch.as_tensor(
+                waist_action_ids, dtype=torch.long, device=self.device
             )
             self._resolve_keypoint_bodies(agent)
             self._resolve_support_bodies(agent)
@@ -925,6 +930,16 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         if body_forces is None or support_ids is None or support_ids.numel() == 0:
             return torch.zeros(self.num_envs, device=self.device)
         return torch.linalg.norm(body_forces.index_select(1, support_ids), dim=-1).amax(dim=-1)
+
+    def _support_quality(self, agent: str) -> torch.Tensor:
+        support_force = self._support_contact_force(agent)
+        return torch.clamp(support_force / self.cfg.contact.force_normalizer, 0.0, 1.0)
+
+    def _waist_action_magnitude(self, agent: str) -> torch.Tensor:
+        waist_ids = self._waist_action_id_tensors.get(agent)
+        if waist_ids is None or waist_ids.numel() == 0:
+            return torch.zeros(self.num_envs, device=self.device)
+        return torch.mean(torch.square(self._actions[agent].index_select(1, waist_ids)), dim=-1)
 
     def _accumulate_episode_terms(self, agent: str, terms: dict[str, torch.Tensor]) -> None:
         for name, value in terms.items():

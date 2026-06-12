@@ -33,6 +33,11 @@ class CombatRewardComputer:
         )
         lateral_ang_vel = torch.linalg.norm(env.root_ang_vel_b(agent)[:, :2], dim=-1)
         balance_recovery = upright * torch.exp(-0.20 * torch.square(lateral_ang_vel))
+        height_ratio = root_pos[:, 2] / max(env._runtime[agent].default_base_height, 1.0e-6)
+        standing_height = upright * torch.exp(-16.0 * torch.square(height_ratio - 1.0))
+        support_contact = env._support_quality(agent) * standing_height
+        low_base_height = torch.relu(0.88 - height_ratio) * (1.0 + 2.0 * (1.0 - upright))
+        waist_action = env._waist_action_magnitude(agent)
 
         heading_error = heading_error_to_target(env.root_quat(agent), rel_pos)
         facing_gate = torch.clamp(torch.cos(heading_error), min=0.0)
@@ -82,6 +87,10 @@ class CombatRewardComputer:
         terms = {
             "upright_stability": scales.upright_stability * upright,
             "balance_recovery": scales.balance_recovery * balance_recovery,
+            "standing_height": scales.standing_height * standing_height,
+            "support_contact": scales.support_contact * support_contact,
+            "low_base_height": -scales.low_base_height * low_base_height,
+            "waist_action": -scales.waist_action * waist_action,
             "controlled_approach": scales.controlled_approach * controlled_approach,
             "locomotion_drive": scales.locomotion_drive * locomotion_drive,
             "contact_intent": scales.contact_intent * contact_intent,
