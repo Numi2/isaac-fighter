@@ -156,7 +156,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "algorithm": algorithm.upper(),
             "task": args_cli.task,
             "seed": args_cli.seed,
-            "reward_version": "combat_proof_v2",
+            "reward_version": "combat_proof_v3_attributed_contact",
             "config_hash": hashlib.sha256(
                 json.dumps(
                     {

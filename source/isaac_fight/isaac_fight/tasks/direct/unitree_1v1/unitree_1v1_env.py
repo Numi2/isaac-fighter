@@ -177,6 +177,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._out_of_bounds = {agent: torch.zeros(n, dtype=torch.bool, device=device) for agent in FIGHTERS}
         self._up_z = {agent: torch.ones(n, device=device) for agent in FIGHTERS}
         self._knockdown_clock = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._candidate_body_contact_force = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._opponent_contact_attribution = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._real_opponent_contact_force = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._ground_contact_force = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._proxy_engagement = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
@@ -276,6 +278,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             combat_metrics = {
                 "combat_useful_contact": self._useful_contact[agent],
                 "combat_contact_intent": self._contact_intent[agent],
+                "combat_candidate_body_contact_force": self._candidate_body_contact_force[agent],
+                "combat_opponent_contact_attribution": self._opponent_contact_attribution[agent],
                 "combat_real_opponent_contact_force": self._real_opponent_contact_force[agent],
                 "combat_ground_contact_force": self._ground_contact_force[agent],
                 "combat_proxy_engagement": self._proxy_engagement[agent],
@@ -367,6 +371,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._new_knockdown[agent][env_ids] = False
             self._out_of_bounds[agent][env_ids] = False
             self._knockdown_clock[agent][env_ids] = 0.0
+            self._candidate_body_contact_force[agent][env_ids] = 0.0
+            self._opponent_contact_attribution[agent][env_ids] = 0.0
             self._real_opponent_contact_force[agent][env_ids] = 0.0
             self._ground_contact_force[agent][env_ids] = 0.0
             self._proxy_engagement[agent][env_ids] = 0.0
@@ -439,29 +445,40 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         contact_proxy = torch.relu(closing_speed - self.cfg.contact.useful_contact_min_closing_speed) * proximity
         self._contact_intent[agent] = torch.clamp((0.25 + torch.relu(closing_speed)) * proximity, 0.0, 2.0)
 
-        real_opponent_force = self._net_contact_force(agent)
+        candidate_contact_force = self._net_contact_force(agent)
         ground_force = self._ground_or_scene_contact_force(agent)
         proxy_engagement = contact_proxy * self.cfg.contact.force_normalizer
+        opp_height_drop = torch.relu(self._prev_root_height[opponent] - self.root_pos(opponent)[:, 2])
+        opp_tilt_drop = torch.relu(self._prev_up_z[opponent] - self._up_z[opponent])
+        destabilization_signal = (
+            self.cfg.contact.destabilization_height_drop_scale * opp_height_drop
+            + self.cfg.contact.destabilization_tilt_gain * opp_tilt_drop
+            + 0.50 * self._new_knockdown[opponent].float()
+        )
+        close_to_opponent = (distance < self.cfg.contact.useful_contact_distance).float()
+        self_stable_gate = (self._up_z[agent] > self.cfg.rules.fall_up_axis_z).float() * (~self._fallen[agent]).float()
+        directed_gate = (
+            (closing_speed > -0.10)
+            | (destabilization_signal > 0.02)
+            | self._new_knockdown[opponent]
+        ).float()
+        attribution = close_to_opponent * self_stable_gate * directed_gate
+        real_opponent_force = candidate_contact_force * attribution
+        self._candidate_body_contact_force[agent] = candidate_contact_force
+        self._opponent_contact_attribution[agent] = attribution
         self._real_opponent_contact_force[agent] = real_opponent_force
         self._ground_contact_force[agent] = ground_force
         self._proxy_engagement[agent] = proxy_engagement
         self._eval_contact_force[agent] = real_opponent_force
-        close_to_opponent = (distance < self.cfg.contact.useful_contact_distance).float()
         force_term = torch.clamp(self._eval_contact_force[agent] / self.cfg.contact.force_normalizer, 0.0, 5.0)
-        physical_contact_gate = close_to_opponent * (self._eval_contact_force[agent] > 0.08 * self.cfg.contact.force_normalizer).float()
+        physical_contact_gate = (self._eval_contact_force[agent] > 0.08 * self.cfg.contact.force_normalizer).float()
         self._useful_contact[agent] = torch.clamp(
             force_term,
             0.0,
             5.0,
         ) * physical_contact_gate
 
-        opp_height_drop = torch.relu(self._prev_root_height[opponent] - self.root_pos(opponent)[:, 2])
-        opp_tilt_drop = torch.relu(self._prev_up_z[opponent] - self._up_z[opponent])
-        self._opponent_destabilization[agent] = (
-            self.cfg.contact.destabilization_height_drop_scale * opp_height_drop
-            + self.cfg.contact.destabilization_tilt_gain * opp_tilt_drop
-            + 0.50 * self._new_knockdown[opponent].float()
-        )
+        self._opponent_destabilization[agent] = destabilization_signal
         self._proof_contact[agent] = self._useful_contact[agent]
         self._proof_destabilization[agent] = self._opponent_destabilization[agent] * physical_contact_gate
         self._proof_impact[agent] = (
@@ -549,6 +566,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             "duration_s": 0.0,
             "useful_contact": 0.0,
             "contact_intent": 0.0,
+            "candidate_body_contact_force": 0.0,
+            "opponent_contact_attribution": 0.0,
             "real_opponent_contact_force": 0.0,
             "ground_contact_force": 0.0,
             "proxy_engagement": 0.0,
@@ -593,6 +612,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                     "Match/knockdowns": float(self._new_knockdown[agent][env_ids].float().sum().item()),
                     "Match/self_falls": float(self._fallen[agent][env_ids].float().sum().item()),
                     "Match/out_of_bounds_losses": float(self._out_of_bounds[agent][env_ids].float().sum().item()),
+                    "Match/avg_candidate_body_contact_force": float(self._candidate_body_contact_force[agent][env_ids].mean().item()),
+                    "Match/avg_opponent_contact_attribution": float(self._opponent_contact_attribution[agent][env_ids].mean().item()),
                     "Match/avg_real_opponent_contact_force": float(self._real_opponent_contact_force[agent][env_ids].mean().item()),
                     "Match/avg_ground_contact_force": float(self._ground_contact_force[agent][env_ids].mean().item()),
                     "Match/avg_proxy_engagement": float(self._proxy_engagement[agent][env_ids].mean().item()),
@@ -633,6 +654,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 "root_quat": [float(x) for x in self.root_quat(agent)[idx].detach().cpu().tolist()],
                 "action": [float(x) for x in self._actions[agent][idx].detach().cpu().tolist()],
                 "reward": float(rewards[agent][idx].detach().cpu().item()),
+                "candidate_body_contact_force": float(self._candidate_body_contact_force[agent][idx].detach().cpu().item()),
+                "opponent_contact_attribution": float(self._opponent_contact_attribution[agent][idx].detach().cpu().item()),
                 "real_opponent_contact_force": float(self._real_opponent_contact_force[agent][idx].detach().cpu().item()),
                 "ground_contact_force": float(self._ground_contact_force[agent][idx].detach().cpu().item()),
                 "proxy_engagement": float(self._proxy_engagement[agent][idx].detach().cpu().item()),

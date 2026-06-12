@@ -26,8 +26,8 @@ Achieved:
 - Combat shaping: approach pressure, useful contact, destabilization, knockdown reward, stability, efficiency, boundary discipline, terminal outcome terms.
 - skrl IPPO/MAPPO configs aligned with Isaac Lab 2.3 runner schema.
 - 8192-env Isaac Launchable self-play resumed from live checkpoints with persistent pool sync.
-- TensorBoard combat telemetry: useful contact, real opponent contact force, ground/scene force, proxy engagement, proof impact, destabilization, knockdown events, inactivity, spin-without-contact, win/loss/draw, score.
-- Proof layer split: `contact_intent` and `proxy_engagement` are training-only exploration signals; tournament scoring, timer decisions, Elo evidence, and proof metrics use real opponent contact and impact-gated destabilization.
+- TensorBoard combat telemetry: useful contact, candidate body contact force, attributed opponent contact force, ground/scene force, proxy engagement, proof impact, destabilization, knockdown events, inactivity, spin-without-contact, win/loss/draw, score.
+- Proof layer split: `contact_intent` and `proxy_engagement` are training-only exploration signals. Raw non-foot body contact is logged as a candidate signal; tournament scoring, timer decisions, Elo evidence, and proof metrics use the stricter attributed opponent-contact channel plus impact-gated destabilization.
 
 Next:
 
