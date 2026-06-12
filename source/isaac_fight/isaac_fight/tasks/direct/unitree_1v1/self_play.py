@@ -10,6 +10,7 @@ logic: it only replaces an opponent action tensor with the output of a sampled p
 from __future__ import annotations
 
 import os
+import random
 import re
 import shutil
 from dataclasses import dataclass
@@ -158,10 +159,12 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         weakness_bias: float = 0.65,
         latest_bias: float = 0.15,
         update_interval_steps: int = 1000,
+        side_swap_probability: float = 0.5,
         train_active_only: bool = True,
     ):
         super().__init__(env)
         self.pool = pool
+        self.base_active_agent = active_agent
         self.active_agent = active_agent
         self.opponent_agent = opponent_of(active_agent)
         self.device = device
@@ -170,6 +173,7 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         self.weakness_bias = weakness_bias
         self.latest_bias = latest_bias
         self.update_interval_steps = max(1, int(update_interval_steps))
+        self.side_swap_probability = max(0.0, min(1.0, float(side_swap_probability)))
         self.train_active_only = train_active_only
         self._last_obs: dict[str, torch.Tensor] | None = None
         self._current_sample: OpponentSample | None = None
@@ -178,6 +182,7 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):  # noqa: ANN003
         obs, info = self.env.reset(**kwargs)
+        self._select_active_side()
         self._last_obs = obs
         self._sample_backend()
         return obs, info
@@ -203,6 +208,8 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
                 if self._current_sample is not None:
                     agent_info["self_play"].update(
                         {
+                            "active_agent": self.active_agent,
+                            "frozen_agent": self.opponent_agent,
                             "opponent_policy_id": self._current_sample.policy.policy_id,
                             "opponent_version": self._current_sample.policy.version,
                             "opponent_elo": self._current_sample.policy.elo,
@@ -230,6 +237,13 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
             self._backend = SkrlCheckpointPolicyBackend(path, agent_id=self.opponent_agent, device=self.device)
         elif "torchscript" in sample.policy.tags:
             self._backend = TorchScriptPolicyBackend(path, device=self.device)
+
+    def _select_active_side(self) -> None:
+        if random.random() < self.side_swap_probability:
+            self.active_agent = opponent_of(self.base_active_agent)
+        else:
+            self.active_agent = self.base_active_agent
+        self.opponent_agent = opponent_of(self.active_agent)
 
 
 def _version_from_path(path: Path) -> int:
@@ -277,6 +291,7 @@ def maybe_wrap_historical_opponent(env: gym.Env, cfg, log_dir: str | Path | None
         weakness_bias=cfg.self_play.weakness_bias,
         latest_bias=cfg.self_play.latest_bias,
         update_interval_steps=getattr(cfg.self_play, "opponent_update_interval", 1000),
+        side_swap_probability=getattr(cfg.self_play, "side_swap_probability", 0.5),
         train_active_only=True,
     )
 

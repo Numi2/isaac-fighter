@@ -61,7 +61,7 @@ cd /path/to/IsaacLab
   --headless
 ```
 
-Self-play is closed-loop by default: checkpoints are synced into `policy_pool`, and when compatible pool policies exist the opponent side is overwritten by a frozen historical policy sampled by Elo range, weakness, and recency. Cold starts fall back to symmetric IPPO until the first pool policies exist. Use `--no_historical_opponent` only for ablations.
+Self-play is closed-loop by default: checkpoints are synced into `policy_pool`, and when compatible pool policies exist one side is overwritten by a frozen historical policy sampled by Elo range, weakness, and recency. The active side is swapped during training to reduce side bias. Cold starts fall back to symmetric IPPO until the first pool policies exist. Use `--no_historical_opponent` only for ablations.
 
 Keep the pool synchronized while long training runs continue:
 
