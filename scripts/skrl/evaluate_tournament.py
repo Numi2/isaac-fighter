@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402,I001
 # Copyright (c) 2026, Isaac Fight contributors.
 # SPDX-License-Identifier: BSD-3-Clause
 
@@ -123,6 +124,12 @@ def main(env_cfg, agent_cfg):  # noqa: ANN001, ARG001
                         "training_contact_force_fighter_b": float(env.unwrapped._training_contact_force[FIGHTER_B].mean().item()),
                         "eval_contact_force_fighter_a": float(env.unwrapped._eval_contact_force[FIGHTER_A].mean().item()),
                         "eval_contact_force_fighter_b": float(env.unwrapped._eval_contact_force[FIGHTER_B].mean().item()),
+                        "attack_momentum_fighter_a": float(env.unwrapped._attack_momentum[FIGHTER_A].mean().item()),
+                        "attack_momentum_fighter_b": float(env.unwrapped._attack_momentum[FIGHTER_B].mean().item()),
+                        "strike_speed_fighter_a": float(env.unwrapped._strike_speed[FIGHTER_A].mean().item()),
+                        "strike_speed_fighter_b": float(env.unwrapped._strike_speed[FIGHTER_B].mean().item()),
+                        "destabilizing_impact_fighter_a": float(env.unwrapped._destabilizing_impact[FIGHTER_A].mean().item()),
+                        "destabilizing_impact_fighter_b": float(env.unwrapped._destabilizing_impact[FIGHTER_B].mean().item()),
                         "proof_impact_fighter_a": float(env.unwrapped._proof_impact[FIGHTER_A].mean().item()),
                         "proof_impact_fighter_b": float(env.unwrapped._proof_impact[FIGHTER_B].mean().item()),
                         "energy_fighter_a": float(env.unwrapped._energy_ema[FIGHTER_A].mean().item()),

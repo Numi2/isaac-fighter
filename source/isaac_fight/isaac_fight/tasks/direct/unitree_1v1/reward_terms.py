@@ -37,6 +37,7 @@ class CombatRewardComputer:
         approach_delta = torch.clamp(prev_distance - distance, -0.25, 0.25)
         controlled_approach = approach_delta * facing_gate * upright
         contact_intent = env._contact_intent[agent] * facing_gate * upright * env.proxy_reward_scale()
+        attack_momentum = env._attack_momentum[agent] * facing_gate * upright
 
         radial = torch.linalg.norm(root_pos[:, :2], dim=-1)
         arena_control = torch.clamp(1.0 - torch.square(radial / env.cfg.arena.radius), 0.0, 1.0)
@@ -62,6 +63,7 @@ class CombatRewardComputer:
             "balance_recovery": scales.balance_recovery * balance_recovery,
             "controlled_approach": scales.controlled_approach * controlled_approach,
             "contact_intent": scales.contact_intent * contact_intent,
+            "attack_momentum": scales.attack_momentum * attack_momentum,
             "arena_control": scales.arena_control * arena_control,
             "useful_contact": scales.useful_contact * useful_contact,
             "destabilizing_impact": scales.destabilizing_impact * destabilizing_impact,

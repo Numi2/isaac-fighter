@@ -124,6 +124,7 @@ class RewardScalesCfg:
     balance_recovery: float = 0.03
     controlled_approach: float = 1.80
     contact_intent: float = 2.20
+    attack_momentum: float = 2.80
     arena_control: float = 0.005
     useful_contact: float = 6.00
     destabilizing_impact: float = 8.00

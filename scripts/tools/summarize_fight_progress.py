@@ -32,6 +32,9 @@ DEFAULT_TAGS = (
     "Episode / Total timesteps (mean)",
     "Info / Combat/mean_useful_contact",
     "Info / Combat/mean_contact_intent",
+    "Info / Combat/mean_attack_momentum",
+    "Info / Combat/mean_strike_speed",
+    "Info / Combat/mean_destabilizing_impact",
     "Info / Combat/mean_candidate_body_contact_force",
     "Info / Combat/mean_opponent_contact_attribution",
     "Info / Combat/mean_real_opponent_contact_force",
@@ -119,6 +122,14 @@ def _summarize_tournament(path: Path) -> dict[str, Any]:
             for m in matches
         )
         / (2.0 * len(matches)),
+        "mean_attack_momentum": sum(float(m.get("attack_momentum_fighter_a", 0.0)) + float(m.get("attack_momentum_fighter_b", 0.0)) for m in matches)
+        / (2.0 * len(matches)),
+        "mean_strike_speed": sum(float(m.get("strike_speed_fighter_a", 0.0)) + float(m.get("strike_speed_fighter_b", 0.0)) for m in matches)
+        / (2.0 * len(matches)),
+        "mean_destabilizing_impact": sum(
+            float(m.get("destabilizing_impact_fighter_a", 0.0)) + float(m.get("destabilizing_impact_fighter_b", 0.0)) for m in matches
+        )
+        / (2.0 * len(matches)),
         "mean_opponent_contact_attribution": sum(
             float(m.get("opponent_contact_attribution_fighter_a", 0.0)) + float(m.get("opponent_contact_attribution_fighter_b", 0.0))
             for m in matches
@@ -146,6 +157,9 @@ def _summarize_replay(path: Path) -> dict[str, Any]:
     candidate_samples = []
     attribution_samples = []
     proof_samples = []
+    attack_samples = []
+    strike_samples = []
+    impact_samples = []
     knockdowns = 0
     for step in steps:
         for agent in ("fighter_a", "fighter_b"):
@@ -155,6 +169,9 @@ def _summarize_replay(path: Path) -> dict[str, Any]:
             training_contact_samples.append(float(fighter.get("training_contact_force", 0.0)))
             contact_samples.append(float(fighter.get("eval_contact_force", fighter.get("sensor_contact_force", fighter.get("contact_force", 0.0)))))
             proof_samples.append(float(fighter.get("proof_impact", 0.0)))
+            attack_samples.append(float(fighter.get("attack_momentum", 0.0)))
+            strike_samples.append(float(fighter.get("strike_speed", 0.0)))
+            impact_samples.append(float(fighter.get("destabilizing_impact", 0.0)))
             knockdowns += int(bool(fighter.get("knockdown", False)))
     return {
         "steps": len(steps),
@@ -164,6 +181,9 @@ def _summarize_replay(path: Path) -> dict[str, Any]:
         "mean_training_contact_force": sum(training_contact_samples) / max(len(training_contact_samples), 1),
         "mean_eval_contact_force": sum(contact_samples) / max(len(contact_samples), 1),
         "mean_proof_impact": sum(proof_samples) / max(len(proof_samples), 1),
+        "mean_attack_momentum": sum(attack_samples) / max(len(attack_samples), 1),
+        "mean_strike_speed": sum(strike_samples) / max(len(strike_samples), 1),
+        "mean_destabilizing_impact": sum(impact_samples) / max(len(impact_samples), 1),
         "knockdown_frames": knockdowns,
         "final_winner": int(steps[-1].get("winner", 0)),
     }

@@ -11,7 +11,3 @@ line-length = 120
 target-version = "py310"
 select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501"]
-
-[tool.pytest.ini_options]
-pythonpath = ["source/isaac_fight"]
-testpaths = ["tests"]

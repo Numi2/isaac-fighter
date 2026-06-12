@@ -231,6 +231,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._eval_contact_force = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._useful_contact = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._contact_intent = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._attack_momentum = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._strike_speed = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._destabilizing_impact = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._opponent_destabilization = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
@@ -327,6 +328,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             combat_metrics = {
                 "combat_useful_contact": self._useful_contact[agent],
                 "combat_contact_intent": self._contact_intent[agent],
+                "combat_attack_momentum": self._attack_momentum[agent],
                 "combat_strike_speed": self._strike_speed[agent],
                 "combat_destabilizing_impact": self._destabilizing_impact[agent],
                 "combat_candidate_body_contact_force": self._candidate_body_contact_force[agent],
@@ -435,6 +437,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._eval_contact_force[agent][env_ids] = 0.0
             self._useful_contact[agent][env_ids] = 0.0
             self._contact_intent[agent][env_ids] = 0.0
+            self._attack_momentum[agent][env_ids] = 0.0
             self._strike_speed[agent][env_ids] = 0.0
             self._destabilizing_impact[agent][env_ids] = 0.0
             self._opponent_destabilization[agent][env_ids] = 0.0
@@ -474,7 +477,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                     self._knockdown[agent], self._knockdown_clock[agent] + self.step_dt, torch.zeros_like(self._knockdown_clock[agent])
                 )
                 self._score[agent] += (
-                    0.20 * self._useful_contact[agent]
+                    0.10 * self._attack_momentum[agent]
+                    + 0.20 * self._useful_contact[agent]
                     + 0.40 * self._destabilizing_impact[agent]
                     + 0.30 * self._proof_destabilization[agent]
                     + 5.0 * self._new_knockdown[opponent].float()
@@ -546,6 +550,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             | self._new_knockdown[opponent]
         ).float()
         attribution = close_to_opponent * self_stable_gate * directed_gate
+        strike_speed_term = torch.clamp(strike_speed / self.cfg.contact.strike_speed_normalizer, 0.0, 5.0)
+        attack_momentum = strike_speed_term * proximity * self_stable_gate * (closing_speed > 0.05).float()
         real_opponent_force = candidate_contact_force * attribution
         self._candidate_body_contact_force[agent] = candidate_contact_force
         self._opponent_contact_attribution[agent] = attribution
@@ -557,7 +563,6 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._eval_contact_force[agent] = real_opponent_force
         force_term = torch.clamp(self._training_contact_force[agent] / self.cfg.contact.force_normalizer, 0.0, 5.0)
         physical_contact_gate = (self._eval_contact_force[agent] > 0.08 * self.cfg.contact.force_normalizer).float()
-        strike_speed_term = torch.clamp(strike_speed / self.cfg.contact.strike_speed_normalizer, 0.0, 5.0)
         destabilizing_impact = force_term * strike_speed_term * physical_contact_gate * (1.0 + torch.clamp(destabilization_signal, 0.0, 2.0))
         training_contact_gate = torch.maximum(physical_contact_gate, (contact_proxy > 0.05).float() * close_to_opponent)
         self._useful_contact[agent] = torch.clamp(
@@ -566,6 +571,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             5.0,
         ) * training_contact_gate
 
+        self._attack_momentum[agent] = attack_momentum
         self._strike_speed[agent] = strike_speed * attribution
         self._destabilizing_impact[agent] = destabilizing_impact
         self._opponent_destabilization[agent] = destabilization_signal
@@ -682,6 +688,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             "duration_s": 0.0,
             "useful_contact": 0.0,
             "contact_intent": 0.0,
+            "attack_momentum": 0.0,
             "strike_speed": 0.0,
             "destabilizing_impact": 0.0,
             "candidate_body_contact_force": 0.0,
@@ -738,6 +745,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                     "Match/avg_proxy_engagement": float(self._proxy_engagement[agent][env_ids].mean().item()),
                     "Match/avg_training_contact_force": float(self._training_contact_force[agent][env_ids].mean().item()),
                     "Match/avg_eval_contact_force": float(self._eval_contact_force[agent][env_ids].mean().item()),
+                    "Match/avg_attack_momentum": float(self._attack_momentum[agent][env_ids].mean().item()),
                     "Match/avg_strike_speed": float(self._strike_speed[agent][env_ids].mean().item()),
                     "Match/avg_destabilizing_impact": float(self._destabilizing_impact[agent][env_ids].mean().item()),
                     "Match/proof_impact": float(self._proof_impact[agent][env_ids].mean().item()),
@@ -783,6 +791,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 "proxy_engagement": float(self._proxy_engagement[agent][idx].detach().cpu().item()),
                 "training_contact_force": float(self._training_contact_force[agent][idx].detach().cpu().item()),
                 "eval_contact_force": float(self._eval_contact_force[agent][idx].detach().cpu().item()),
+                "attack_momentum": float(self._attack_momentum[agent][idx].detach().cpu().item()),
                 "strike_speed": float(self._strike_speed[agent][idx].detach().cpu().item()),
                 "destabilizing_impact": float(self._destabilizing_impact[agent][idx].detach().cpu().item()),
                 "proof_contact": float(self._proof_contact[agent][idx].detach().cpu().item()),
