@@ -186,6 +186,8 @@ class GhostFighterUnitree1v1EnvCfg(DirectMARLEnvCfg):
         self.observation_spaces = {FIGHTER_A: observation_dim(dim_a), FIGHTER_B: observation_dim(dim_b)}
         self.state_space = -1
         self.sim.render_interval = self.decimation
+        if hasattr(self.sim, "physx") and hasattr(self.sim.physx, "gpu_max_rigid_patch_count"):
+            self.sim.physx.gpu_max_rigid_patch_count = max(self.sim.physx.gpu_max_rigid_patch_count, 2**23)
         if self.scene.env_spacing < self.arena.radius * 2.1:
             self.scene.env_spacing = self.arena.radius * 2.1
 
