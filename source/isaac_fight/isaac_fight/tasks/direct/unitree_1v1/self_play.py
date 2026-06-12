@@ -74,6 +74,8 @@ class SkrlCheckpointPolicyBackend:
             {key.removeprefix("net_container."): value for key, value in state_dict.items() if key.startswith("net_container.")}
         )
         self.module.eval()
+        first_layer = next((module for module in self.module if isinstance(module, nn.Linear)), None)
+        self.expected_obs_dim = int(first_layer.in_features) if first_layer is not None else None
 
     @staticmethod
     def _build_policy(state_dict: dict[str, torch.Tensor]) -> nn.Sequential:
@@ -93,6 +95,11 @@ class SkrlCheckpointPolicyBackend:
     @torch.no_grad()
     def act(self, observations: torch.Tensor) -> torch.Tensor:
         obs = observations.to(self.device)
+        if self.expected_obs_dim is not None:
+            if obs.shape[-1] > self.expected_obs_dim:
+                obs = obs[..., : self.expected_obs_dim]
+            elif obs.shape[-1] < self.expected_obs_dim:
+                obs = torch.nn.functional.pad(obs, (0, self.expected_obs_dim - obs.shape[-1]))
         if self.obs_mean is not None and self.obs_var is not None:
             obs = torch.clamp((obs - self.obs_mean) / (torch.sqrt(self.obs_var) + 1.0e-8), -5.0, 5.0)
         return torch.clamp(self.module(obs).to(observations.device), -1.0, 1.0)
@@ -107,6 +114,8 @@ class SelfPlayTrainingSupervisor:
     snapshot_interval: int = 50
     active_elo: float = 1000.0
     metadata: dict | None = None
+    promotion_min_proof_impact: float = 0.0
+    promotion_bootstrap_count: int = 1
 
     def __post_init__(self):
         self.pool = OpponentPool(self.pool_dir)
@@ -116,17 +125,29 @@ class SelfPlayTrainingSupervisor:
     def sync_checkpoints(self) -> int:
         """Add unseen checkpoints to the policy pool and return the number added."""
 
-        known_paths = {Path(p.checkpoint_path).resolve() for p in self.pool.policies if Path(p.checkpoint_path).exists()}
+        self.pool.load()
+        known_pooled_paths = {Path(p.checkpoint_path).resolve() for p in self.pool.policies if Path(p.checkpoint_path).exists()}
+        known_source_paths = {
+            str(p.metadata.get("source_checkpoint_path"))
+            for p in self.pool.policies
+            if isinstance(p.metadata, dict) and p.metadata.get("source_checkpoint_path")
+        }
+        promotion_metric = self._latest_proof_impact()
         candidates = sorted(self.checkpoint_dir.rglob("*.pt"), key=lambda p: (p.stat().st_mtime, str(p)))
         added = 0
         for candidate in candidates:
             resolved = candidate.resolve()
-            if resolved in known_paths:
+            if str(resolved) in known_source_paths:
                 continue
             version = _version_from_path(candidate)
             run_name = _safe_name(candidate.parent.parent.name if candidate.parent.name in {"checkpoints", "models"} else candidate.parent.name)
             pooled_name = f"{run_name}_{candidate.name}" if run_name else candidate.name
             pooled_path = Path(self.pool.root) / "checkpoints" / pooled_name
+            if resolved in known_pooled_paths or (pooled_path.exists() and pooled_path.resolve() in known_pooled_paths):
+                continue
+            if not self._passes_promotion_gate(promotion_metric):
+                continue
+            source_stat = candidate.stat()
             pooled_path.parent.mkdir(parents=True, exist_ok=True)
             if resolved != pooled_path.resolve():
                 shutil.copy2(candidate, pooled_path)
@@ -135,13 +156,42 @@ class SelfPlayTrainingSupervisor:
             metadata = dict(self.metadata or {})
             metadata.setdefault("source_run", run_name)
             metadata.setdefault("source_checkpoint", candidate.name)
+            metadata["source_checkpoint_path"] = str(resolved)
+            metadata["source_checkpoint_mtime_ns"] = int(source_stat.st_mtime_ns)
+            metadata["source_checkpoint_size"] = int(source_stat.st_size)
+            metadata["promotion_proof_impact"] = promotion_metric
             self.pool.add_checkpoint(pooled_path, version=version, policy_id=policy_id, elo=self.active_elo, tags=tags, metadata=metadata)
-            known_paths.add(pooled_path.resolve())
+            known_pooled_paths.add(pooled_path.resolve())
+            known_source_paths.add(str(resolved))
             added += 1
         return added
 
     def sample(self, active_elo: float | None = None) -> OpponentSample | None:
         return self.pool.sample(active_elo=active_elo if active_elo is not None else self.active_elo)
+
+    def _passes_promotion_gate(self, proof_impact: float | None) -> bool:
+        threshold = max(0.0, float(self.promotion_min_proof_impact))
+        if threshold <= 0.0:
+            return True
+        if len(self.pool) < max(0, int(self.promotion_bootstrap_count)):
+            return True
+        return proof_impact is not None and proof_impact >= threshold
+
+    def _latest_proof_impact(self) -> float | None:
+        try:
+            from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+        except Exception:
+            return None
+        log_dir = self.checkpoint_dir.parent if self.checkpoint_dir.name in {"checkpoints", "models"} else self.checkpoint_dir
+        try:
+            accumulator = EventAccumulator(str(log_dir))
+            accumulator.Reload()
+            values = accumulator.Scalars("Info / Combat/mean_proof_impact")
+        except Exception:
+            return None
+        if not values:
+            return None
+        return float(values[-1].value)
 
 
 class LiveSelfPlayPoolSync:
@@ -216,6 +266,9 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         self._last_obs: dict[str, torch.Tensor] | None = None
         self._current_sample: OpponentSample | None = None
         self._backends: dict[str, PolicyBackend] = {}
+        self._backend_cache: dict[tuple[str, int, int, str, str], PolicyBackend] = {}
+        self._backend_cache_order: list[tuple[str, int, int, str, str]] = []
+        self._max_backend_cache_entries = 16
         self._active_masks: dict[str, torch.Tensor] = {}
         self._freeze_masks: dict[str, torch.Tensor] = {}
         self._step_count = 0
@@ -302,14 +355,42 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         path = Path(sample.policy.checkpoint_path)
         if not path.exists():
             return
+        kind = self._policy_kind(sample.policy.tags, path)
+        if kind is None:
+            return
+        stat = path.stat()
+        path_key = str(path.resolve())
         for agent in FIGHTERS:
             try:
-                if "skrl" in sample.policy.tags or _looks_like_skrl_checkpoint(path):
-                    self._backends[agent] = SkrlCheckpointPolicyBackend(path, agent_id=agent, device=self.device)
-                elif "torchscript" in sample.policy.tags:
-                    self._backends[agent] = TorchScriptPolicyBackend(path, device=self.device)
+                cache_key = (path_key, int(stat.st_mtime_ns), int(stat.st_size), agent, kind)
+                backend = self._backend_cache.get(cache_key)
+                if backend is None:
+                    if kind == "skrl":
+                        backend = SkrlCheckpointPolicyBackend(path, agent_id=agent, device=self.device)
+                    elif kind == "torchscript":
+                        backend = TorchScriptPolicyBackend(path, device=self.device)
+                    else:
+                        continue
+                    self._store_backend(cache_key, backend)
+                self._backends[agent] = backend
             except Exception as exc:  # noqa: BLE001 - skip incompatible legacy pool entries.
                 print(f"[WARN] Could not load frozen opponent backend for {agent} from {path}: {exc}", flush=True)
+
+    def _policy_kind(self, tags: tuple[str, ...], path: Path) -> str | None:
+        if "skrl" in tags or _looks_like_skrl_checkpoint(path):
+            return "skrl"
+        if "torchscript" in tags:
+            return "torchscript"
+        return None
+
+    def _store_backend(self, key: tuple[str, int, int, str, str], backend: PolicyBackend) -> None:
+        self._backend_cache[key] = backend
+        if key in self._backend_cache_order:
+            self._backend_cache_order.remove(key)
+        self._backend_cache_order.append(key)
+        while len(self._backend_cache_order) > self._max_backend_cache_entries:
+            stale = self._backend_cache_order.pop(0)
+            self._backend_cache.pop(stale, None)
 
     def _initialize_vectorized_masks(self, obs: dict[str, torch.Tensor]) -> None:
         sample_obs = next(iter(obs.values()))

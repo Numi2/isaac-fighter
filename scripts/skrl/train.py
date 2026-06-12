@@ -36,6 +36,7 @@ parser.add_argument("--pool_sync_interval_s", type=float, default=60.0)
 parser.add_argument("--opponent_update_interval", type=int, default=None)
 parser.add_argument("--side_swap_probability", type=float, default=None)
 parser.add_argument("--live_self_play_fraction", type=float, default=None)
+parser.add_argument("--launch_preset", type=str, default="fast_contact_bootstrap", choices=["fast_contact_bootstrap", "full_fight_self_play"])
 parser.add_argument("--export_io_descriptors", action="store_true", default=False)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -55,6 +56,7 @@ from pathlib import Path
 
 import gymnasium as gym
 import skrl
+import torch
 from packaging import version
 
 if args_cli.ml_framework.startswith("torch"):
@@ -91,10 +93,104 @@ else:
     algorithm = agent_cfg_entry_point.split("_cfg")[0].split("skrl_")[-1].lower()
 
 
+def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa: ANN001
+    if not hasattr(env_cfg, "fighter_a"):
+        return
+    if preset == "fast_contact_bootstrap":
+        env_cfg.episode_length_s = 10.0
+        env_cfg.arena.radius = 2.0
+        env_cfg.fighter_a.spawn_xy = (-0.45, 0.0)
+        env_cfg.fighter_b.spawn_xy = (0.45, 0.0)
+        env_cfg.fighter_a.spawn_xy_noise = 0.08
+        env_cfg.fighter_b.spawn_xy_noise = 0.08
+        env_cfg.contact.useful_contact_distance = 1.25
+        env_cfg.curriculum.enabled = True
+        env_cfg.curriculum.no_engagement_timeout_s = 3.0
+        env_cfg.curriculum.no_engagement_grace_s = 1.5
+        env_cfg.self_play.opponent_update_interval = min(int(env_cfg.self_play.opponent_update_interval), 250)
+        agent_cfg["agent"]["rollouts"] = max(int(agent_cfg["agent"]["rollouts"]), 32)
+    elif preset == "full_fight_self_play":
+        env_cfg.episode_length_s = 30.0
+        env_cfg.arena.radius = 3.5
+        env_cfg.fighter_a.spawn_xy = (-0.78, 0.0)
+        env_cfg.fighter_b.spawn_xy = (0.78, 0.0)
+        env_cfg.fighter_a.spawn_xy_noise = 0.06
+        env_cfg.fighter_b.spawn_xy_noise = 0.06
+        env_cfg.contact.useful_contact_distance = 1.95
+        env_cfg.curriculum.enabled = False
+        agent_cfg["agent"]["rollouts"] = max(int(agent_cfg["agent"]["rollouts"]), 64)
+
+
+def _adapt_checkpoint_observation_space(path: str, env_cfg, algorithm_name: str, log_dir: str) -> str:  # noqa: ANN001
+    try:
+        checkpoint = torch.load(path, map_location="cpu")
+    except Exception:
+        return path
+    if not isinstance(checkpoint, dict):
+        return path
+    changed = False
+    for agent, expected_obs in getattr(env_cfg, "observation_spaces", {}).items():
+        agent_checkpoint = checkpoint.get(agent)
+        if not isinstance(agent_checkpoint, dict):
+            continue
+        agent_changed = False
+        if _expand_model_input(agent_checkpoint.get("policy"), int(expected_obs)):
+            agent_changed = True
+        value_target = int(env_cfg.state_space) if algorithm_name == "mappo" else int(expected_obs)
+        if _expand_model_input(agent_checkpoint.get("value"), value_target):
+            agent_changed = True
+        if _expand_preprocessor(agent_checkpoint.get("state_preprocessor"), int(expected_obs)):
+            agent_changed = True
+        if agent_changed:
+            agent_checkpoint.pop("optimizer", None)
+            changed = True
+    if not changed:
+        return path
+    adapted = Path(log_dir) / "params" / f"{Path(path).stem}_obs_adapted.pt"
+    adapted.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(checkpoint, adapted)
+    print(f"[INFO] Adapted checkpoint observation inputs: {path} -> {adapted}")
+    return str(adapted)
+
+
+def _expand_model_input(state_dict, target_dim: int) -> bool:  # noqa: ANN001
+    if not isinstance(state_dict, dict):
+        return False
+    weight_keys = sorted(k for k, value in state_dict.items() if k.endswith(".weight") and hasattr(value, "ndim") and value.ndim == 2)
+    for key in weight_keys:
+        weight = state_dict[key]
+        current = int(weight.shape[1])
+        if current == target_dim:
+            return False
+        if current > target_dim:
+            return False
+        state_dict[key] = torch.nn.functional.pad(weight, (0, target_dim - current, 0, 0))
+        return True
+    return False
+
+
+def _expand_preprocessor(preprocessor, target_dim: int) -> bool:  # noqa: ANN001
+    if not isinstance(preprocessor, dict):
+        return False
+    changed = False
+    for key, fill in (("running_mean", 0.0), ("running_variance", 1.0)):
+        value = preprocessor.get(key)
+        if not hasattr(value, "shape") or value.numel() == 0:
+            continue
+        current = int(value.shape[-1])
+        if current >= target_dim:
+            continue
+        pad = torch.full((*value.shape[:-1], target_dim - current), fill, dtype=value.dtype)
+        preprocessor[key] = torch.cat((value, pad), dim=-1)
+        changed = True
+    return changed
+
+
 @hydra_task_config(args_cli.task, agent_cfg_entry_point)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+    _apply_launch_preset(env_cfg, agent_cfg, args_cli.launch_preset)
     if args_cli.max_iterations:
         agent_cfg["trainer"]["timesteps"] = args_cli.max_iterations * agent_cfg["agent"]["rollouts"]
     if args_cli.self_play and args_cli.snapshot_interval:
@@ -146,6 +242,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         "rewards": vars(env_cfg.rewards),
                         "contact": vars(env_cfg.contact),
                         "self_play": vars(env_cfg.self_play),
+                        "curriculum": vars(env_cfg.curriculum),
+                        "launch_preset": args_cli.launch_preset,
                     },
                     sort_keys=True,
                     default=str,
@@ -193,6 +291,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     runner = Runner(env, agent_cfg)
     if args_cli.checkpoint:
         resume_path = retrieve_file_path(args_cli.checkpoint)
+        resume_path = _adapt_checkpoint_observation_space(resume_path, env_cfg, algorithm, log_dir)
         print(f"[INFO] Loading checkpoint: {resume_path}")
         runner.agent.load(resume_path)
 
@@ -203,6 +302,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             checkpoint_dir=checkpoint_dir_from_log_dir(log_dir),
             snapshot_interval=args_cli.snapshot_interval,
             metadata=pool_metadata,
+            promotion_min_proof_impact=getattr(env_cfg.self_play, "promotion_min_proof_impact", 0.0),
+            promotion_bootstrap_count=getattr(env_cfg.self_play, "promotion_bootstrap_count", 1),
         )
         if args_cli.pool_sync_interval_s > 0.0:
             pool_sync = LiveSelfPlayPoolSync(supervisor, interval_s=args_cli.pool_sync_interval_s)

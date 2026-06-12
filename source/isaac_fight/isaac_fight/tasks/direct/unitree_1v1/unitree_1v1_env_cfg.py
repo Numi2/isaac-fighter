@@ -43,7 +43,7 @@ class FighterCfg:
 class ArenaCfg:
     """Arena settings."""
 
-    radius: float = 3.5
+    radius: float = 2.0
     visual_boundary: bool = True
     wall_height: float = 0.45
     wall_thickness: float = 0.10
@@ -71,7 +71,7 @@ class ContactCfg:
     """Contact detection and logging settings."""
 
     force_normalizer: float = 600.0
-    useful_contact_distance: float = 1.95
+    useful_contact_distance: float = 1.25
     useful_contact_min_closing_speed: float = 0.0
     robot_contact_proxy_gain: float = 0.85
     destabilization_height_drop_scale: float = 3.0
@@ -86,10 +86,32 @@ class ObservationCfg:
     base_angular_velocity_scale: float = 0.2
     relative_position_normalizer: float = 3.5
     relative_velocity_scale: float = 0.5
+    keypoint_position_normalizer: float = 2.5
     joint_position_scale: float = 1.0
     joint_velocity_scale: float = 0.05
     clip_joint_velocity: float = 5.0
     observation_clip: float = 10.0
+    opponent_keypoints_enabled: bool = True
+    opponent_keypoint_body_patterns: tuple[str, ...] = (
+        ".*pelvis.*|.*base.*",
+        ".*torso.*|.*waist.*",
+        ".*left.*wrist.*|.*left.*hand.*|.*left.*elbow.*",
+        ".*right.*wrist.*|.*right.*hand.*|.*right.*elbow.*",
+        ".*left.*foot.*|.*left.*ankle.*",
+        ".*right.*foot.*|.*right.*ankle.*",
+    )
+
+
+@configclass
+class CurriculumCfg:
+    """Fast-contact bootstrap settings."""
+
+    enabled: bool = True
+    no_engagement_timeout_s: float = 3.0
+    no_engagement_grace_s: float = 1.5
+    engagement_min_training_contact: float = 0.02
+    proxy_gain_anneal_steps: int = 50_000
+    min_proxy_gain: float = 0.15
 
 
 @configclass
@@ -141,6 +163,8 @@ class SelfPlayCfg:
     latest_bias: float = 0.35
     side_swap_probability: float = 0.5
     live_self_play_fraction: float = 0.25
+    promotion_min_proof_impact: float = 1.0e-6
+    promotion_bootstrap_count: int = 1
 
 
 @configclass
@@ -149,13 +173,13 @@ class GhostFighterUnitree1v1EnvCfg(DirectMARLEnvCfg):
 
     # env
     decimation: int = 4
-    episode_length_s: float = 30.0
+    episode_length_s: float = 10.0
     possible_agents: list[str] = [FIGHTER_A, FIGHTER_B]
-    state_space = -1
+    state_space: int = observation_dim(get_unitree_robot_spec("g1_29dof").action_dim) + observation_dim(get_unitree_robot_spec("h1").action_dim)
 
     # default robots: G1 main fighter, H1 larger opponent
-    fighter_a: FighterCfg = FighterCfg(robot_name="g1_29dof", spawn_xy=(-0.78, 0.0), spawn_yaw=0.0, spawn_xy_noise=0.06)
-    fighter_b: FighterCfg = FighterCfg(robot_name="h1", spawn_xy=(0.78, 0.0), spawn_yaw=math.pi, spawn_xy_noise=0.06)
+    fighter_a: FighterCfg = FighterCfg(robot_name="g1_29dof", spawn_xy=(-0.45, 0.0), spawn_yaw=0.0, spawn_xy_noise=0.08)
+    fighter_b: FighterCfg = FighterCfg(robot_name="h1", spawn_xy=(0.45, 0.0), spawn_yaw=math.pi, spawn_xy_noise=0.08)
 
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=0.005, render_interval=decimation)
@@ -167,6 +191,7 @@ class GhostFighterUnitree1v1EnvCfg(DirectMARLEnvCfg):
     contact: ContactCfg = ContactCfg()
     observations_cfg: ObservationCfg = ObservationCfg()
     rewards: RewardScalesCfg = RewardScalesCfg()
+    curriculum: CurriculumCfg = CurriculumCfg()
     replay: ReplayCfg = ReplayCfg()
     self_play: SelfPlayCfg = SelfPlayCfg()
 
@@ -186,7 +211,7 @@ class GhostFighterUnitree1v1EnvCfg(DirectMARLEnvCfg):
         dim_b = action_dim_for_fighter(self.fighter_b)
         self.action_spaces = {FIGHTER_A: dim_a, FIGHTER_B: dim_b}
         self.observation_spaces = {FIGHTER_A: observation_dim(dim_a), FIGHTER_B: observation_dim(dim_b)}
-        self.state_space = -1
+        self.state_space = self.observation_spaces[FIGHTER_A] + self.observation_spaces[FIGHTER_B]
         self.sim.render_interval = self.decimation
         if hasattr(self.sim, "physx") and hasattr(self.sim.physx, "gpu_max_rigid_patch_count"):
             self.sim.physx.gpu_max_rigid_patch_count = max(self.sim.physx.gpu_max_rigid_patch_count, 2**23)

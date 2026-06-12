@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from isaac_fight.tasks.direct.unitree_1v1.opponent_pool import OpponentPool
+from isaac_fight.tasks.direct.unitree_1v1.self_play import SelfPlayTrainingSupervisor
 
 
 def test_pool_add_save_load_and_sample(tmp_path: Path):
@@ -36,3 +37,24 @@ def test_pool_ids_do_not_collide_for_same_checkpoint_number(tmp_path: Path):
     assert first.policy_id == "policy_v000050"
     assert second.policy_id != first.policy_id
     assert len(pool) == 2
+
+
+def test_checkpoint_sync_is_idempotent_for_source_paths(tmp_path: Path):
+    checkpoint_dir = tmp_path / "run_a" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    ckpt = checkpoint_dir / "agent_000050.pt"
+    ckpt.write_bytes(b"not a torch checkpoint")
+
+    supervisor = SelfPlayTrainingSupervisor(pool_dir=tmp_path / "pool", checkpoint_dir=checkpoint_dir)
+    assert supervisor.sync_checkpoints() == 1
+    policy_id = supervisor.pool.policies[0].policy_id
+    supervisor.pool.update_result(policy_id, 1.0, elo=1032.0)
+
+    assert supervisor.sync_checkpoints() == 0
+    reloaded = OpponentPool(tmp_path / "pool")
+    assert len(reloaded) == 1
+    record = reloaded.policies[0]
+    assert record.policy_id == policy_id
+    assert record.games == 1
+    assert record.wins == 1
+    assert record.elo == 1032.0

@@ -10,12 +10,14 @@ import torch
 from isaac_fight.utils.torch_math import heading_error_to_target, rotate_yaw_inverse
 
 BASE_FEATURE_DIM = 31
+OPPONENT_KEYPOINTS = 6
+KEYPOINT_FEATURE_DIM = OPPONENT_KEYPOINTS * 6
 
 
 def observation_dim(action_dim: int) -> int:
     """Observation dimension for a fighter with ``action_dim`` controlled joints."""
 
-    return BASE_FEATURE_DIM + 3 * int(action_dim)
+    return BASE_FEATURE_DIM + 3 * int(action_dim) + KEYPOINT_FEATURE_DIM
 
 
 class CombatObservationBuilder:
@@ -75,6 +77,7 @@ class CombatObservationBuilder:
         joint_pos_rel = env.joint_pos_rel(agent)
         joint_vel = torch.clamp(env.joint_vel(agent) * self.cfg.joint_velocity_scale, -self.cfg.clip_joint_velocity, self.cfg.clip_joint_velocity)
         last_action = env._last_actions[agent]
+        opponent_keypoints = env.opponent_keypoint_features(agent, opponent)
 
         obs = torch.cat(
             (
@@ -89,6 +92,7 @@ class CombatObservationBuilder:
                 torch.clamp(joint_pos_rel * self.cfg.joint_position_scale, -5.0, 5.0),
                 joint_vel,
                 last_action,
+                opponent_keypoints,
             ),
             dim=-1,
         )

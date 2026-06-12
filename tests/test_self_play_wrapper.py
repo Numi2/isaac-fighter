@@ -1,32 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-import sys
-import types
 
 import torch
 
-try:
-    import gymnasium as gym
-except ModuleNotFoundError:
-    class _Env:
-        @property
-        def unwrapped(self):
-            return self
-
-    class _Wrapper(_Env):
-        def __init__(self, env):
-            self.env = env
-
-        @property
-        def unwrapped(self):
-            return self.env.unwrapped
-
-    gym = types.SimpleNamespace(Env=_Env, Wrapper=_Wrapper)
-    sys.modules["gymnasium"] = gym
+import gymnasium as gym
 
 from isaac_fight.tasks.direct.unitree_1v1.fighter_ids import FIGHTER_A, FIGHTER_B
 from isaac_fight.tasks.direct.unitree_1v1.opponent_pool import OpponentPool
+from isaac_fight.tasks.direct.unitree_1v1 import self_play
 from isaac_fight.tasks.direct.unitree_1v1.self_play import HistoricalOpponentActionWrapper
 
 
@@ -72,3 +54,24 @@ def test_vectorized_historical_wrapper_freezes_only_frozen_side(tmp_path: Path):
     assert torch.all(env.last_actions[FIGHTER_B] == 0.0)
     assert torch.all(rewards[FIGHTER_A] == 1.0)
     assert torch.all(rewards[FIGHTER_B] == 0.0)
+
+
+def test_historical_wrapper_caches_backends_for_same_checkpoint(tmp_path: Path, monkeypatch):
+    ckpt = tmp_path / "agent_000050.pt"
+    ckpt.write_bytes(b"torchscript")
+    pool = OpponentPool(tmp_path / "pool")
+    pool.add_checkpoint(ckpt, version=50, policy_id="p", tags=("torchscript",))
+
+    loads = {"count": 0}
+
+    class _CountingBackend(_ZeroBackend):
+        def __init__(self, path, device="cuda:0"):  # noqa: ANN001, ARG002
+            loads["count"] += 1
+
+    monkeypatch.setattr(self_play, "TorchScriptPolicyBackend", _CountingBackend)
+    wrapper = HistoricalOpponentActionWrapper(_DummyVectorEnv(), pool=pool)
+    wrapper.reset()
+    assert loads["count"] == 2
+
+    wrapper._sample_backend()
+    assert loads["count"] == 2

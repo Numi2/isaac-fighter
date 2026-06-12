@@ -25,7 +25,7 @@ from isaac_fight.utils.torch_math import normalize, quat_apply_inverse, quat_fro
 from .fight_common import FighterRuntimeInfo
 from .fight_rules import FightRuleEngine
 from .fighter_ids import FIGHTER_A, FIGHTER_B, FIGHTERS, opponent_of
-from .observations import CombatObservationBuilder
+from .observations import CombatObservationBuilder, OPPONENT_KEYPOINTS
 from .replay import MatchReplayRecorder, ReplayHeader
 from .reward_terms import CombatRewardComputer
 from .unitree_1v1_env_cfg import GhostFighterUnitree1v1EnvCfg
@@ -51,6 +51,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._obs_builder = CombatObservationBuilder(cfg.observations_cfg)
         self._reward_computer = CombatRewardComputer(cfg.rewards)
         self._runtime: dict[str, FighterRuntimeInfo] = {}
+        self._keypoint_body_ids: dict[str, list[int]] = {}
+        self._keypoint_body_names: dict[str, list[str]] = {}
         self._resolve_controlled_joints()
         self._allocate_buffers()
         self._configure_replay()
@@ -163,6 +165,23 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 default_base_height=spec.default_base_height,
                 action_scale=float(scale),
             )
+            self._resolve_keypoint_bodies(agent)
+
+    def _resolve_keypoint_bodies(self, agent: str) -> None:
+        robot = self.robots[agent]
+        ids: list[int] = []
+        names: list[str] = []
+        patterns = list(self.cfg.observations_cfg.opponent_keypoint_body_patterns)
+        patterns = (patterns + [""] * OPPONENT_KEYPOINTS)[:OPPONENT_KEYPOINTS]
+        for pattern in patterns:
+            try:
+                body_ids, body_names = robot.find_bodies(pattern, preserve_order=False)
+            except Exception:
+                body_ids, body_names = [], []
+            ids.append(int(body_ids[0]) if body_ids else -1)
+            names.append(str(body_names[0]) if body_names else "")
+        self._keypoint_body_ids[agent] = ids
+        self._keypoint_body_names[agent] = names
 
     def _allocate_buffers(self) -> None:
         device = self.device
@@ -202,6 +221,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._prev_distance_to_opponent = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._prev_root_height = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._prev_up_z = {agent: torch.ones(n, device=device) for agent in FIGHTERS}
+        self._no_engagement_clock = torch.zeros(n, device=device)
 
         self._winner = torch.zeros(n, dtype=torch.long, device=device)
         self._loser = torch.zeros(n, dtype=torch.long, device=device)
@@ -306,6 +326,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         self._refresh_combat_features(advance=True)
         self._time_out = self.episode_length_buf >= self.max_episode_length - 1
+        if self.cfg.curriculum.enabled and self.cfg.curriculum.no_engagement_timeout_s > 0.0:
+            no_engagement_timeout = self._no_engagement_clock >= self.cfg.curriculum.no_engagement_timeout_s
+            self._time_out = self._time_out | no_engagement_timeout
         knockout = {
             agent: self._knockdown_clock[agent] >= self.cfg.rules.knockout_grace_s for agent in FIGHTERS
         }
@@ -397,6 +420,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._draw[env_ids] = False
         self._match_terminal[env_ids] = False
         self._time_out[env_ids] = False
+        self._no_engagement_clock[env_ids] = 0.0
 
     def _refresh_combat_features(self, advance: bool) -> None:
         for agent in FIGHTERS:
@@ -423,9 +447,30 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                     + 5.0 * self._new_knockdown[opponent].float()
                     + 0.002 * torch.clamp(1.0 - torch.linalg.norm(self.root_pos(agent)[:, :2], dim=-1) / self.cfg.arena.radius, 0.0, 1.0)
                 )
+        if advance:
+            self._update_engagement_clock()
 
         if not advance:
             self._commit_history(only_if_uninitialized=True)
+
+    def _update_engagement_clock(self) -> None:
+        if not self.cfg.curriculum.enabled:
+            self._no_engagement_clock.zero_()
+            return
+        min_contact = self.cfg.curriculum.engagement_min_training_contact * self.cfg.contact.force_normalizer
+        contact = (
+            (self._training_contact_force[FIGHTER_A] > min_contact)
+            | (self._training_contact_force[FIGHTER_B] > min_contact)
+            | (self._eval_contact_force[FIGHTER_A] > min_contact)
+            | (self._eval_contact_force[FIGHTER_B] > min_contact)
+        )
+        episode_time = self.episode_length_buf.float() * self.step_dt
+        in_grace = episode_time < self.cfg.curriculum.no_engagement_grace_s
+        self._no_engagement_clock = torch.where(
+            contact | in_grace,
+            torch.zeros_like(self._no_engagement_clock),
+            self._no_engagement_clock + self.step_dt,
+        )
 
     def _commit_history(self, only_if_uninitialized: bool = False) -> None:
         for agent in FIGHTERS:
@@ -472,7 +517,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._real_opponent_contact_force[agent] = real_opponent_force
         self._ground_contact_force[agent] = ground_force
         self._proxy_engagement[agent] = proxy_engagement
-        self._training_contact_force[agent] = torch.maximum(real_opponent_force, proxy_engagement * self.cfg.contact.robot_contact_proxy_gain)
+        proxy_gain = self._effective_proxy_gain()
+        self._training_contact_force[agent] = torch.maximum(real_opponent_force, proxy_engagement * proxy_gain)
         self._eval_contact_force[agent] = real_opponent_force
         force_term = torch.clamp(self._training_contact_force[agent] / self.cfg.contact.force_normalizer, 0.0, 5.0)
         physical_contact_gate = (self._eval_contact_force[agent] > 0.08 * self.cfg.contact.force_normalizer).float()
@@ -496,6 +542,18 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._inactivity[agent] = ((root_speed < 0.05) & (distance > 0.90) & (self._useful_contact[agent] < 0.05)).float()
         self._spin_without_contact[agent] = torch.relu(yaw_rate - 2.0) * (self._useful_contact[agent] < 0.05).float()
         self._uncontrolled_collision[agent] = self._useful_contact[agent] * (1.0 - torch.clamp(self._up_z[agent], 0.0, 1.0))
+
+    def _effective_proxy_gain(self) -> float:
+        base = float(self.cfg.contact.robot_contact_proxy_gain)
+        if not self.cfg.curriculum.enabled or self.cfg.curriculum.proxy_gain_anneal_steps <= 0:
+            return base
+        progress = min(float(self.common_step_counter) / float(self.cfg.curriculum.proxy_gain_anneal_steps), 1.0)
+        floor = max(0.0, min(1.0, float(self.cfg.curriculum.min_proxy_gain)))
+        return base * max(floor, 1.0 - progress)
+
+    def proxy_reward_scale(self) -> float:
+        base = max(float(self.cfg.contact.robot_contact_proxy_gain), 1.0e-6)
+        return self._effective_proxy_gain() / base
 
     def _update_effort_penalties(self, agent: str) -> None:
         robot = self.robots[agent]
@@ -733,6 +791,44 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         robot = self.robots[agent]
         ids = self._runtime[agent].joint_ids
         return robot.data.joint_vel[:, ids]
+
+    def opponent_keypoint_features(self, observer_agent: str, target_agent: str) -> torch.Tensor:
+        num_keypoints = OPPONENT_KEYPOINTS
+        if not self.cfg.observations_cfg.opponent_keypoints_enabled or num_keypoints == 0:
+            return torch.zeros(self.num_envs, num_keypoints * 6, device=self.device)
+        target_pos_w, target_vel_w = self._body_keypoint_state_w(target_agent)
+        rel_pos_w = target_pos_w - self.root_pos_w(observer_agent).unsqueeze(1)
+        rel_vel_w = target_vel_w - self.root_lin_vel_w(observer_agent).unsqueeze(1)
+        observer_quat = self.root_quat(observer_agent).repeat_interleave(num_keypoints, dim=0)
+        pos_b = rotate_yaw_inverse(observer_quat, rel_pos_w.reshape(-1, 3)).reshape(self.num_envs, num_keypoints, 3)
+        vel_b = rotate_yaw_inverse(observer_quat, rel_vel_w.reshape(-1, 3)).reshape(self.num_envs, num_keypoints, 3)
+        pos_b = torch.clamp(pos_b / self.cfg.observations_cfg.keypoint_position_normalizer, -5.0, 5.0)
+        vel_b = torch.clamp(vel_b * self.cfg.observations_cfg.relative_velocity_scale, -5.0, 5.0)
+        return torch.cat((pos_b, vel_b), dim=-1).reshape(self.num_envs, -1)
+
+    def _body_keypoint_state_w(self, agent: str) -> tuple[torch.Tensor, torch.Tensor]:
+        robot = self.robots[agent]
+        ids = self._keypoint_body_ids.get(agent, [])
+        count = OPPONENT_KEYPOINTS
+        body_pos_w = getattr(robot.data, "body_pos_w", None)
+        body_vel_w = getattr(robot.data, "body_lin_vel_w", None)
+        fallback_pos = self.root_pos_w(agent)
+        fallback_vel = self.root_lin_vel_w(agent)
+        positions = []
+        velocities = []
+        for idx in ids[:count]:
+            if idx >= 0 and body_pos_w is not None and idx < body_pos_w.shape[1]:
+                positions.append(body_pos_w[:, idx])
+            else:
+                positions.append(fallback_pos)
+            if idx >= 0 and body_vel_w is not None and idx < body_vel_w.shape[1]:
+                velocities.append(body_vel_w[:, idx])
+            else:
+                velocities.append(fallback_vel)
+        while len(positions) < count:
+            positions.append(fallback_pos)
+            velocities.append(fallback_vel)
+        return torch.stack(positions, dim=1), torch.stack(velocities, dim=1)
 
     def close(self) -> None:
         if self._replay is not None:
