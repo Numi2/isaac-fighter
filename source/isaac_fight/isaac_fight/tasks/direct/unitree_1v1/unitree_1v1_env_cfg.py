@@ -133,6 +133,7 @@ class RewardScalesCfg:
     topple_pressure: float = 7.00
     drive_pressure: float = 5.00
     support_break_pressure: float = 6.50
+    opponent_fall: float = 18.00
     opponent_destabilization: float = 5.00
     opponent_knockdown: float = 30.00
     stay_inside: float = 0.01

@@ -49,8 +49,11 @@ DEFAULT_TAGS = (
     "Info / Combat/mean_proof_contact",
     "Info / Combat/mean_proof_impact",
     "Info / Combat/mean_proof_destabilization",
+    "Info / Combat/mean_opponent_fall_events",
+    "Info / Combat/mean_proof_opponent_fall_events",
     "Info / Combat/mean_opponent_knockdown_events",
     "Info / Combat/mean_proof_opponent_knockdown_events",
+    "Info / Combat/mean_self_fall_events",
     "Info / Combat/mean_self_knockdown_events",
     "Info / Combat/mean_inactivity",
     "Info / Combat/mean_spin_without_contact",
@@ -109,6 +112,10 @@ def _summarize_tournament(path: Path) -> dict[str, Any]:
         "wins_a": wins_a,
         "wins_b": wins_b,
         "draws": draws,
+        "fall_events_a": sum(float(m.get("fall_events_fighter_a", 0.0)) for m in matches),
+        "fall_events_b": sum(float(m.get("fall_events_fighter_b", 0.0)) for m in matches),
+        "knockdown_events_a": sum(float(m.get("knockdown_events_fighter_a", 0.0)) for m in matches),
+        "knockdown_events_b": sum(float(m.get("knockdown_events_fighter_b", 0.0)) for m in matches),
         "mean_duration_s": sum(float(m.get("duration_s_mean", m.get("duration_s", 0.0))) for m in matches) / len(matches),
         "mean_eval_contact_force": sum(
             float(m.get("eval_contact_force_fighter_a", m.get("sensor_contact_force_fighter_a", m.get("sensor_contact_force_a", 0.0))))

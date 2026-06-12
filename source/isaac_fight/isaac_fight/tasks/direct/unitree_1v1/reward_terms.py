@@ -49,6 +49,8 @@ class CombatRewardComputer:
         drive_pressure = env._drive_pressure[agent] * upright
         support_break_pressure = env._support_break_pressure[agent] * upright
         opp_destabilization = env._proof_destabilization[agent]
+        proof_gate = (env._proof_impact[agent] > 0.0).float()
+        opponent_fall = proof_gate * (env._new_fall[opponent].float() + 0.08 * env._fallen[opponent].float())
         opponent_knockdown = env._new_knockdown[opponent].float() + 0.15 * env._knockdown[opponent].float()
 
         energy = env._energy[agent]
@@ -73,6 +75,7 @@ class CombatRewardComputer:
             "topple_pressure": scales.topple_pressure * topple_pressure,
             "drive_pressure": scales.drive_pressure * drive_pressure,
             "support_break_pressure": scales.support_break_pressure * support_break_pressure,
+            "opponent_fall": scales.opponent_fall * opponent_fall,
             "opponent_destabilization": scales.opponent_destabilization * opp_destabilization,
             "opponent_knockdown": scales.opponent_knockdown * opponent_knockdown,
             "stay_inside": scales.stay_inside * stay_inside,
