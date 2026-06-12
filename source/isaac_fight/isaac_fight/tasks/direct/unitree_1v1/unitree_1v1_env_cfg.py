@@ -169,6 +169,13 @@ class ReplayCfg:
 
 
 @configclass
+class DiagnosticsCfg:
+    """Runtime diagnostics knobs for high-throughput training."""
+
+    reward_terms_interval: int = 64
+
+
+@configclass
 class SelfPlayCfg:
     enabled: bool = True
     active_agent: str = FIGHTER_A
@@ -214,6 +221,7 @@ class GhostFighterUnitree1v1EnvCfg(DirectMARLEnvCfg):
     rewards: RewardScalesCfg = RewardScalesCfg()
     curriculum: CurriculumCfg = CurriculumCfg()
     replay: ReplayCfg = ReplayCfg()
+    diagnostics: DiagnosticsCfg = DiagnosticsCfg()
     self_play: SelfPlayCfg = SelfPlayCfg()
 
     # Spaces are refreshed in __post_init__ from the selected robot specs.

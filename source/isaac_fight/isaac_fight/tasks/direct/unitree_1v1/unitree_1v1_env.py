@@ -23,9 +23,8 @@ from isaac_fight.assets.robots.unitree import (
     get_unitree_robot_cfg,
     get_unitree_robot_spec,
 )
-from isaac_fight.utils.torch_math import normalize, quat_apply_inverse, quat_from_yaw, rotate_yaw_inverse
+from isaac_fight.utils.torch_math import normalize, quat_apply_inverse, quat_from_yaw, yaw_from_quat
 
-from .contact_filters import max_combat_contact_force
 from .fight_common import FighterRuntimeInfo
 from .fight_rules import FightRuleEngine
 from .fighter_ids import FIGHTER_A, FIGHTER_B, FIGHTERS, opponent_of
@@ -80,8 +79,12 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._reward_computer = CombatRewardComputer(cfg.rewards)
         self._runtime: dict[str, FighterRuntimeInfo] = {}
         self._keypoint_body_ids: dict[str, list[int]] = {}
+        self._keypoint_body_id_tensors: dict[str, torch.Tensor] = {}
         self._keypoint_body_names: dict[str, list[str]] = {}
         self._support_body_ids: dict[str, list[int]] = {}
+        self._support_body_id_tensors: dict[str, torch.Tensor] = {}
+        self._upper_contact_body_id_tensors: dict[str, torch.Tensor] = {}
+        self._strike_body_id_tensors: dict[str, torch.Tensor] = {}
         self._resolve_controlled_joints()
         self._allocate_buffers()
         self._configure_replay()
@@ -213,15 +216,35 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             ids.append(int(body_ids[0]) if body_ids else -1)
             names.append(str(body_names[0]) if body_names else "")
         self._keypoint_body_ids[agent] = ids
+        self._keypoint_body_id_tensors[agent] = torch.as_tensor(ids, dtype=torch.long, device=self.device)
         self._keypoint_body_names[agent] = names
 
     def _resolve_support_bodies(self, agent: str) -> None:
         body_names = tuple(getattr(self.robots[agent], "body_names", ()) or ())
-        self._support_body_ids[agent] = [
-            body_id
-            for body_id, body_name in enumerate(body_names)
-            if any(token in body_name.lower() for token in SUPPORT_BODY_TOKENS)
-        ]
+        support_ids: list[int] = []
+        upper_contact_ids: list[int] = []
+        strike_ids: list[int] = []
+        for body_id, body_name in enumerate(body_names):
+            lower_name = body_name.lower()
+            is_support = any(token in lower_name for token in SUPPORT_BODY_TOKENS)
+            if is_support:
+                support_ids.append(body_id)
+            else:
+                upper_contact_ids.append(body_id)
+            if any(token in lower_name for token in STRIKE_BODY_TOKENS):
+                strike_ids.append(body_id)
+
+        all_ids = list(range(len(body_names)))
+        self._support_body_ids[agent] = support_ids
+        self._support_body_id_tensors[agent] = torch.as_tensor(support_ids, dtype=torch.long, device=self.device)
+        self._upper_contact_body_id_tensors[agent] = torch.as_tensor(
+            upper_contact_ids or all_ids,
+            dtype=torch.long,
+            device=self.device,
+        )
+        self._strike_body_id_tensors[agent] = torch.as_tensor(
+            strike_ids or all_ids, dtype=torch.long, device=self.device
+        )
 
     def _allocate_buffers(self) -> None:
         device = self.device
@@ -344,53 +367,63 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
         rewards: dict[str, torch.Tensor] = {}
+        log_reward_terms = self._should_log_reward_terms()
         for agent in FIGHTERS:
             opponent = opponent_of(agent)
             breakdown = self._reward_computer.compute(self, agent, opponent)
             rewards[agent] = breakdown.total
             self._last_reward_terms[agent] = breakdown.terms
-            mutual_fall = self._new_fall[agent].float() * self._fallen[opponent].float()
-            combat_metrics = {
-                "combat_useful_contact": self._useful_contact[agent],
-                "combat_contact_intent": self._contact_intent[agent],
-                "combat_attack_momentum": self._attack_momentum[agent],
-                "combat_strike_speed": self._strike_speed[agent],
-                "combat_destabilizing_impact": self._destabilizing_impact[agent],
-                "combat_topple_pressure": self._topple_pressure[agent],
-                "combat_drive_pressure": self._drive_pressure[agent],
-                "combat_support_break_pressure": self._support_break_pressure[agent],
-                "combat_candidate_body_contact_force": self._candidate_body_contact_force[agent],
-                "combat_opponent_contact_attribution": self._opponent_contact_attribution[agent],
-                "combat_real_opponent_contact_force": self._real_opponent_contact_force[agent],
-                "combat_ground_contact_force": self._ground_contact_force[agent],
-                "combat_proxy_engagement": self._proxy_engagement[agent],
-                "combat_training_contact_force": self._training_contact_force[agent],
-                "combat_eval_contact_force": self._eval_contact_force[agent],
-                "combat_opponent_destabilization": self._opponent_destabilization[agent],
-                "combat_proof_contact": self._proof_contact[agent],
-                "combat_proof_impact": self._proof_impact[agent],
-                "combat_proof_destabilization": self._proof_destabilization[agent],
-                "combat_recent_attack_pressure": self._recent_attack_pressure[agent],
-                "combat_opponent_fall_events": self._new_fall[opponent].float(),
-                "combat_proof_opponent_fall_events": self._new_fall[opponent].float()
-                * (self._proof_impact[agent] > 0.0).float(),
-                "combat_clean_opponent_fall_events": self._clean_attack_credit(agent, opponent)
-                * self._new_fall[opponent].float(),
-                "combat_opponent_knockdown_events": self._new_knockdown[opponent].float(),
-                "combat_proof_opponent_knockdown_events": self._new_knockdown[opponent].float()
-                * (self._proof_impact[agent] > 0.0).float(),
-                "combat_self_fall_events": self._new_fall[agent].float(),
-                "combat_self_knockdown_events": self._new_knockdown[agent].float(),
-                "combat_mutual_fall_events": mutual_fall,
-                "combat_inactivity": self._inactivity[agent],
-                "combat_spin_without_contact": self._spin_without_contact[agent],
-                "combat_uncontrolled_collision": self._uncontrolled_collision[agent],
-            }
-            self._accumulate_episode_terms(agent, breakdown.terms | {"total_reward": breakdown.total} | combat_metrics)
-            self.extras[agent]["reward_terms"] = breakdown.detached_mean_dict()
+            self._accumulate_episode_terms(agent, self._training_episode_terms(agent, opponent, breakdown))
+            if log_reward_terms:
+                self.extras[agent]["reward_terms"] = breakdown.detached_mean_dict()
         self._write_replay_step(rewards)
         self._commit_history()
         return rewards
+
+    def _should_log_reward_terms(self) -> bool:
+        interval = int(getattr(self.cfg.diagnostics, "reward_terms_interval", 1))
+        return interval <= 1 or self.common_step_counter % interval == 0
+
+    def _training_episode_terms(self, agent: str, opponent: str, breakdown) -> dict[str, torch.Tensor]:  # noqa: ANN001
+        reward_terms = breakdown.terms
+        clean_attack = self._clean_attack_credit(agent, opponent)
+        opponent_fall = self._new_fall[opponent].float()
+        opponent_knockdown = self._new_knockdown[opponent].float()
+        proof_gate = (self._proof_impact[agent] > 0.0).float()
+        return {
+            "total_reward": breakdown.total,
+            "useful_contact": reward_terms["useful_contact"],
+            "destabilizing_impact": reward_terms["destabilizing_impact"],
+            "topple_pressure": reward_terms["topple_pressure"],
+            "drive_pressure": reward_terms["drive_pressure"],
+            "support_break_pressure": reward_terms["support_break_pressure"],
+            "opponent_fall": reward_terms["opponent_fall"],
+            "opponent_knockdown": reward_terms["opponent_knockdown"],
+            "opponent_destabilization": reward_terms["opponent_destabilization"],
+            "impact_self_destabilization": reward_terms["impact_self_destabilization"],
+            "mutual_fall": reward_terms["mutual_fall"],
+            "self_fall": reward_terms["self_fall"],
+            "final_win": reward_terms["final_win"],
+            "final_loss": reward_terms["final_loss"],
+            "combat_useful_contact": self._useful_contact[agent],
+            "combat_attack_momentum": self._attack_momentum[agent],
+            "combat_destabilizing_impact": self._destabilizing_impact[agent],
+            "combat_topple_pressure": self._topple_pressure[agent],
+            "combat_drive_pressure": self._drive_pressure[agent],
+            "combat_support_break_pressure": self._support_break_pressure[agent],
+            "combat_training_contact_force": self._training_contact_force[agent],
+            "combat_eval_contact_force": self._eval_contact_force[agent],
+            "combat_proof_contact": self._proof_contact[agent],
+            "combat_proof_impact": self._proof_impact[agent],
+            "combat_recent_attack_pressure": self._recent_attack_pressure[agent],
+            "combat_opponent_fall_events": opponent_fall,
+            "combat_proof_opponent_fall_events": opponent_fall * proof_gate,
+            "combat_clean_opponent_fall_events": opponent_fall * clean_attack,
+            "combat_opponent_knockdown_events": opponent_knockdown,
+            "combat_proof_opponent_knockdown_events": opponent_knockdown * proof_gate,
+            "combat_self_fall_events": self._new_fall[agent].float(),
+            "combat_mutual_fall_events": self._new_fall[agent].float() * self._fallen[opponent].float(),
+        }
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         self._refresh_combat_features(advance=True)
@@ -787,7 +820,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
 
         limits = getattr(robot.data, "soft_joint_pos_limits", None)
         if limits is None:
-            self._joint_limit_penalty[agent] = torch.zeros(self.num_envs, device=self.device)
+            self._joint_limit_penalty[agent].zero_()
             return
         pos = robot.data.joint_pos[:, ids]
         lo = limits[:, ids, 0]
@@ -800,11 +833,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         body_vel = getattr(self.robots[agent].data, "body_lin_vel_w", None)
         if body_vel is None:
             return torch.relu(torch.sum((self.root_lin_vel_w(agent) - self.root_lin_vel_w(opponent)) * rel_dir, dim=-1))
-        body_names = tuple(getattr(self.robots[agent], "body_names", ()) or ())
-        if body_names and body_vel.shape[1] == len(body_names):
-            keep = [any(token in body_name.lower() for token in STRIKE_BODY_TOKENS) for body_name in body_names]
-            if any(keep):
-                body_vel = body_vel[:, torch.tensor(keep, dtype=torch.bool, device=self.device)]
+        strike_ids = self._strike_body_id_tensors.get(agent)
+        if strike_ids is not None and strike_ids.numel() > 0:
+            body_vel = body_vel.index_select(1, strike_ids)
         rel_body_vel = body_vel - self.root_lin_vel_w(opponent).unsqueeze(1)
         return torch.relu(torch.sum(rel_body_vel * rel_dir.unsqueeze(1), dim=-1)).amax(dim=-1)
 
@@ -821,12 +852,16 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 return torch.linalg.norm(force_matrix, dim=-1).amax(dim=(-1, -2))
             if hasattr(sensor.data, "net_forces_w"):
                 forces = sensor.data.net_forces_w
-                body_names = getattr(sensor, "body_names", ())
-                return max_combat_contact_force(
-                    forces,
-                    body_names=body_names,
-                    include_lower_body_contacts=include_lower_body_contacts,
-                )
+                all_body_force = torch.linalg.norm(forces, dim=-1).amax(dim=-1)
+                upper_ids = self._upper_contact_body_id_tensors.get(agent)
+                if upper_ids is None or upper_ids.numel() == 0:
+                    return all_body_force
+                upper_force = torch.linalg.norm(forces.index_select(1, upper_ids), dim=-1).amax(dim=-1)
+                if include_lower_body_contacts is None:
+                    return upper_force
+                if isinstance(include_lower_body_contacts, bool):
+                    return all_body_force if include_lower_body_contacts else upper_force
+                return torch.where(include_lower_body_contacts.bool(), all_body_force, upper_force)
         return torch.zeros(self.num_envs, device=self.device)
 
     def _support_break_pressure_term(
@@ -837,11 +872,11 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
     ) -> torch.Tensor:
         robot = self.robots[opponent]
         body_pos_w = getattr(robot.data, "body_pos_w", None)
-        support_ids = self._support_body_ids.get(opponent, [])
-        if body_pos_w is None or not support_ids:
+        support_ids = self._support_body_id_tensors.get(opponent)
+        if body_pos_w is None or support_ids is None or support_ids.numel() == 0:
             return torch.zeros(self.num_envs, device=self.device)
 
-        support_pos = body_pos_w[:, support_ids, :2]
+        support_pos = body_pos_w.index_select(1, support_ids)[:, :, :2]
         support_center = support_pos.mean(dim=1)
         support_radius = torch.linalg.norm(support_pos - support_center.unsqueeze(1), dim=-1).amax(dim=-1)
         root_xy = self.root_pos_w(opponent)[:, :2]
@@ -1091,36 +1126,55 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         target_pos_w, target_vel_w = self._body_keypoint_state_w(target_agent)
         rel_pos_w = target_pos_w - self.root_pos_w(observer_agent).unsqueeze(1)
         rel_vel_w = target_vel_w - self.root_lin_vel_w(observer_agent).unsqueeze(1)
-        observer_quat = self.root_quat(observer_agent).repeat_interleave(num_keypoints, dim=0)
-        pos_b = rotate_yaw_inverse(observer_quat, rel_pos_w.reshape(-1, 3)).reshape(self.num_envs, num_keypoints, 3)
-        vel_b = rotate_yaw_inverse(observer_quat, rel_vel_w.reshape(-1, 3)).reshape(self.num_envs, num_keypoints, 3)
+        observer_quat = self.root_quat(observer_agent)
+        pos_b = self._rotate_yaw_inverse_keypoints(observer_quat, rel_pos_w)
+        vel_b = self._rotate_yaw_inverse_keypoints(observer_quat, rel_vel_w)
         pos_b = torch.clamp(pos_b / self.cfg.observations_cfg.keypoint_position_normalizer, -5.0, 5.0)
         vel_b = torch.clamp(vel_b * self.cfg.observations_cfg.relative_velocity_scale, -5.0, 5.0)
         return torch.cat((pos_b, vel_b), dim=-1).reshape(self.num_envs, -1)
 
+    @staticmethod
+    def _rotate_yaw_inverse_keypoints(root_quat_w: torch.Tensor, vectors_w: torch.Tensor) -> torch.Tensor:
+        yaw = yaw_from_quat(root_quat_w)
+        cos_yaw = torch.cos(yaw).unsqueeze(-1)
+        sin_yaw = torch.sin(yaw).unsqueeze(-1)
+        x_w = vectors_w[..., 0]
+        y_w = vectors_w[..., 1]
+        vectors_b = torch.empty_like(vectors_w)
+        vectors_b[..., 0] = cos_yaw * x_w + sin_yaw * y_w
+        vectors_b[..., 1] = -sin_yaw * x_w + cos_yaw * y_w
+        vectors_b[..., 2] = vectors_w[..., 2]
+        return vectors_b
+
     def _body_keypoint_state_w(self, agent: str) -> tuple[torch.Tensor, torch.Tensor]:
         robot = self.robots[agent]
-        ids = self._keypoint_body_ids.get(agent, [])
         count = OPPONENT_KEYPOINTS
         body_pos_w = getattr(robot.data, "body_pos_w", None)
         body_vel_w = getattr(robot.data, "body_lin_vel_w", None)
         fallback_pos = self.root_pos_w(agent)
         fallback_vel = self.root_lin_vel_w(agent)
-        positions = []
-        velocities = []
-        for idx in ids[:count]:
-            if idx >= 0 and body_pos_w is not None and idx < body_pos_w.shape[1]:
-                positions.append(body_pos_w[:, idx])
-            else:
-                positions.append(fallback_pos)
-            if idx >= 0 and body_vel_w is not None and idx < body_vel_w.shape[1]:
-                velocities.append(body_vel_w[:, idx])
-            else:
-                velocities.append(fallback_vel)
-        while len(positions) < count:
-            positions.append(fallback_pos)
-            velocities.append(fallback_vel)
-        return torch.stack(positions, dim=1), torch.stack(velocities, dim=1)
+        ids = self._keypoint_body_id_tensors.get(agent)
+        if ids is None or ids.numel() == 0:
+            return fallback_pos.unsqueeze(1).expand(-1, count, -1), fallback_vel.unsqueeze(1).expand(-1, count, -1)
+
+        gather_ids = torch.clamp(ids[:count], min=0)
+        fallback_pos_batched = fallback_pos.unsqueeze(1).expand(-1, count, -1)
+        fallback_vel_batched = fallback_vel.unsqueeze(1).expand(-1, count, -1)
+
+        if body_pos_w is None:
+            positions = fallback_pos_batched
+        else:
+            positions = body_pos_w.index_select(1, gather_ids)
+            valid_pos = (ids[:count] >= 0).view(1, -1, 1)
+            positions = torch.where(valid_pos, positions, fallback_pos_batched)
+
+        if body_vel_w is None:
+            velocities = fallback_vel_batched
+        else:
+            velocities = body_vel_w.index_select(1, gather_ids)
+            valid_vel = (ids[:count] >= 0).view(1, -1, 1)
+            velocities = torch.where(valid_vel, velocities, fallback_vel_batched)
+        return positions, velocities
 
     def close(self) -> None:
         if self._replay is not None:

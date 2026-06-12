@@ -125,35 +125,53 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.fighter_a.robot_name = "g1_29dof"
         env_cfg.fighter_b.robot_name = "g1_29dof"
         refresh_spaces = True
-        env_cfg.episode_length_s = 8.0
-        env_cfg.arena.radius = 1.85
-        env_cfg.rules.knockout_grace_s = 0.75
-        env_cfg.fighter_a.spawn_xy = (-0.58, -0.10)
-        env_cfg.fighter_b.spawn_xy = (0.58, 0.10)
+        env_cfg.decimation = 3
+        env_cfg.sim.render_interval = env_cfg.decimation
+        env_cfg.episode_length_s = 6.5
+        env_cfg.arena.radius = 1.65
+        env_cfg.rules.knockout_grace_s = 0.55
+        env_cfg.fighter_a.spawn_xy = (-0.50, -0.08)
+        env_cfg.fighter_b.spawn_xy = (0.50, 0.08)
         env_cfg.fighter_a.spawn_yaw = 0.08
         env_cfg.fighter_b.spawn_yaw = math.pi + 0.08
-        env_cfg.fighter_a.spawn_xy_noise = 0.07
-        env_cfg.fighter_b.spawn_xy_noise = 0.07
-        env_cfg.fighter_a.spawn_yaw_noise = 0.12
-        env_cfg.fighter_b.spawn_yaw_noise = 0.12
-        env_cfg.fighter_a.spawn_forward_speed = 1.30
-        env_cfg.fighter_b.spawn_forward_speed = 1.30
-        env_cfg.fighter_a.spawn_forward_speed_noise = 0.20
-        env_cfg.fighter_b.spawn_forward_speed_noise = 0.20
-        env_cfg.fighter_a.action_scale = 0.45
-        env_cfg.fighter_b.action_scale = 0.45
-        env_cfg.fighter_a.action_smoothing = 0.15
-        env_cfg.fighter_b.action_smoothing = 0.15
-        env_cfg.contact.useful_contact_distance = 1.55
-        env_cfg.contact.attack_memory_s = 0.80
-        env_cfg.contact.fall_credit_min_attack = 0.10
+        env_cfg.fighter_a.spawn_xy_noise = 0.05
+        env_cfg.fighter_b.spawn_xy_noise = 0.05
+        env_cfg.fighter_a.spawn_yaw_noise = 0.10
+        env_cfg.fighter_b.spawn_yaw_noise = 0.10
+        env_cfg.fighter_a.spawn_forward_speed = 1.55
+        env_cfg.fighter_b.spawn_forward_speed = 1.55
+        env_cfg.fighter_a.spawn_forward_speed_noise = 0.25
+        env_cfg.fighter_b.spawn_forward_speed_noise = 0.25
+        env_cfg.fighter_a.action_scale = 0.50
+        env_cfg.fighter_b.action_scale = 0.50
+        env_cfg.fighter_a.action_smoothing = 0.08
+        env_cfg.fighter_b.action_smoothing = 0.08
+        env_cfg.contact.useful_contact_distance = 1.45
+        env_cfg.contact.attack_memory_s = 0.65
+        env_cfg.contact.fall_credit_min_attack = 0.08
         env_cfg.curriculum.enabled = True
-        env_cfg.curriculum.no_engagement_timeout_s = 2.4
-        env_cfg.curriculum.no_engagement_grace_s = 0.8
-        env_cfg.curriculum.proxy_gain_anneal_steps = min(int(env_cfg.curriculum.proxy_gain_anneal_steps), 35_000)
-        env_cfg.self_play.opponent_update_interval = min(int(env_cfg.self_play.opponent_update_interval), 250)
-        env_cfg.self_play.live_self_play_fraction = max(float(env_cfg.self_play.live_self_play_fraction), 0.35)
-        agent_cfg["agent"]["rollouts"] = max(int(agent_cfg["agent"]["rollouts"]), 32)
+        env_cfg.curriculum.no_engagement_timeout_s = 1.6
+        env_cfg.curriculum.no_engagement_grace_s = 0.45
+        env_cfg.curriculum.proxy_gain_anneal_steps = min(int(env_cfg.curriculum.proxy_gain_anneal_steps), 20_000)
+        env_cfg.curriculum.min_proxy_gain = max(float(env_cfg.curriculum.min_proxy_gain), 0.20)
+        env_cfg.self_play.opponent_update_interval = min(int(env_cfg.self_play.opponent_update_interval), 160)
+        env_cfg.self_play.live_self_play_fraction = max(float(env_cfg.self_play.live_self_play_fraction), 0.45)
+        env_cfg.rewards.contact_intent = max(float(env_cfg.rewards.contact_intent), 2.8)
+        env_cfg.rewards.attack_momentum = max(float(env_cfg.rewards.attack_momentum), 3.4)
+        env_cfg.rewards.drive_pressure = max(float(env_cfg.rewards.drive_pressure), 6.2)
+        env_cfg.rewards.support_break_pressure = max(float(env_cfg.rewards.support_break_pressure), 7.2)
+        env_cfg.rewards.opponent_fall = max(float(env_cfg.rewards.opponent_fall), 22.0)
+        env_cfg.rewards.opponent_knockdown = max(float(env_cfg.rewards.opponent_knockdown), 36.0)
+        env_cfg.rewards.energy = min(float(env_cfg.rewards.energy), 0.010)
+        env_cfg.rewards.jitter = min(float(env_cfg.rewards.jitter), 0.08)
+        env_cfg.diagnostics.reward_terms_interval = max(int(env_cfg.diagnostics.reward_terms_interval), 64)
+        agent_cfg["agent"]["rollouts"] = 16
+        agent_cfg["agent"]["learning_epochs"] = min(int(agent_cfg["agent"]["learning_epochs"]), 3)
+        agent_cfg["agent"]["mini_batches"] = min(int(agent_cfg["agent"]["mini_batches"]), 4)
+        agent_cfg["agent"]["entropy_loss_scale"] = max(float(agent_cfg["agent"]["entropy_loss_scale"]), 0.008)
+        agent_cfg["agent"]["experiment"]["write_interval"] = max(
+            int(agent_cfg["agent"]["experiment"]["write_interval"]), 200
+        )
     elif preset == "full_fight_self_play":
         env_cfg.episode_length_s = 30.0
         env_cfg.arena.radius = 3.5
@@ -280,7 +298,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "algorithm": algorithm.upper(),
             "task": args_cli.task,
             "seed": args_cli.seed,
-            "reward_version": "combat_flywheel_v3",
+            "reward_version": "combat_flywheel_v4_fast8k",
             "config_hash": hashlib.sha256(
                 json.dumps(
                     {
@@ -292,6 +310,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         "contact": vars(env_cfg.contact),
                         "self_play": vars(env_cfg.self_play),
                         "curriculum": vars(env_cfg.curriculum),
+                        "diagnostics": vars(env_cfg.diagnostics),
                         "launch_preset": args_cli.launch_preset,
                     },
                     sort_keys=True,
