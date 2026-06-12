@@ -112,7 +112,7 @@ class WarmstartReport:
 
     def print_summary(self) -> None:
         print(f"[INFO] Wrote locomotion warm-start: {self.output_path}", flush=True)
-        print(f"[INFO] Source robot: {self.robot_name} -> fight agent: {self.fight_agent}", flush=True)
+        print(f"[INFO] Source robot: {self.robot_name} -> fight agent(s): {self.fight_agent}", flush=True)
         for item in self.transferred:
             print(f"[INFO] transfer {item.source} -> {item.target} shape={item.shape}", flush=True)
         for item in self.initialized:
@@ -159,14 +159,11 @@ def create_fight_warmstart(
     checkpoint = _torch_load_cpu(source_path)
     source_state = _extract_model_state_dict(checkpoint)
     info = inspect_rsl_rl_checkpoint(source_path, robot=robot, source_task=source_task)
-    spec = VELOCITY_SPECS[info.robot_name]
-    if info.action_dim != spec.action_dim:
-        raise ValueError(f"{info.robot_name} expected action_dim={spec.action_dim}, source checkpoint has {info.action_dim}")
+    source_spec = VELOCITY_SPECS[info.robot_name]
+    if info.action_dim != source_spec.action_dim:
+        raise ValueError(f"{info.robot_name} expected action_dim={source_spec.action_dim}, source checkpoint has {info.action_dim}")
 
-    fight_agents = {
-        FIGHTER_A: VELOCITY_SPECS["g1_29dof"],
-        FIGHTER_B: VELOCITY_SPECS["h1"],
-    }
+    fight_agents = _mirror_fight_agents(info.robot_name)
     warmstart: dict[str, Any] = {
         "__metadata__": {
             "schema": LOCOMOTION_WARMSTART_SCHEMA,
@@ -199,7 +196,7 @@ def create_fight_warmstart(
         initialized.extend(TransferItem(target=f"{agent}.policy.{item[0]}", source=None, shape=item[1], status=item[2]) for item in policy_items)
         initialized.extend(TransferItem(target=f"{agent}.value.{item[0]}", source=None, shape=item[1], status=item[2]) for item in value_items)
 
-        if agent == spec.fight_agent:
+        if target_spec.robot_name == info.robot_name:
             moved, skipped = _copy_compatible_layers(
                 source_state=source_state,
                 source_layers=source_actor_by_index,
@@ -216,8 +213,8 @@ def create_fight_warmstart(
             "value_preprocessor": _running_standard_scaler_state(1),
             "metadata": {
                 "robot_name": target_spec.robot_name,
-                "source_robot_name": info.robot_name if agent == spec.fight_agent else None,
-                "source_task": info.source_task if agent == spec.fight_agent else None,
+                "source_robot_name": info.robot_name if target_spec.robot_name == info.robot_name else None,
+                "source_task": info.source_task if target_spec.robot_name == info.robot_name else None,
                 "obs_dim": obs_dim,
                 "action_dim": action_dim,
                 "not_opponent": True,
@@ -229,7 +226,7 @@ def create_fight_warmstart(
     return WarmstartReport(
         output_path=str(output),
         robot_name=info.robot_name,
-        fight_agent=spec.fight_agent,
+        fight_agent=",".join(agent for agent, target_spec in fight_agents.items() if target_spec.robot_name == info.robot_name),
         source_checkpoint=str(source_path),
         transferred=tuple(transferred),
         initialized=tuple(item for item in initialized if item.status != "clean_init"),
@@ -326,9 +323,37 @@ def apply_locomotion_warmstart(agent: Any, path: str | Path) -> list[str]:
             module = _find_agent_module(agent, agent_id, model_name)
             if module is None or not hasattr(module, "load_state_dict"):
                 continue
-            module.load_state_dict(state_dict, strict=False)
-            loaded.append(f"{agent_id}.{model_name}")
+            if _load_shape_compatible_state_dict(module, state_dict):
+                loaded.append(f"{agent_id}.{model_name}")
     return loaded
+
+
+def _mirror_fight_agents(robot_name: str) -> dict[str, VelocityRobotSpec]:
+    spec = VELOCITY_SPECS[robot_name]
+    return {FIGHTER_A: spec, FIGHTER_B: spec}
+
+
+def _load_shape_compatible_state_dict(module: Any, state_dict: dict[str, torch.Tensor]) -> bool:
+    try:
+        target_state = module.state_dict()
+    except Exception:
+        module.load_state_dict(state_dict, strict=False)
+        return True
+    compatible = {}
+    for key, value in state_dict.items():
+        for target_key in (key, key.removeprefix("net_container.")):
+            target = target_state.get(target_key)
+            if isinstance(value, torch.Tensor) and isinstance(target, torch.Tensor):
+                try:
+                    if tuple(value.shape) == tuple(target.shape):
+                        compatible[target_key] = value
+                        break
+                except RuntimeError:
+                    continue
+    if not compatible:
+        return False
+    module.load_state_dict(compatible, strict=False)
+    return True
 
 
 def _torch_load_cpu(path: Path) -> Any:

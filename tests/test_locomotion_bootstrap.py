@@ -65,7 +65,7 @@ def test_warmstart_transfers_compatible_actor_layers(tmp_path: Path):
     report = create_fight_warmstart(source, output)
 
     assert output.exists()
-    assert report.fight_agent == FIGHTER_A
+    assert report.fight_agent == f"{FIGHTER_A},{FIGHTER_B}"
     warmstart = torch.load(output, map_location="cpu", weights_only=False)
     assert warmstart["__metadata__"]["schema"] == LOCOMOTION_WARMSTART_SCHEMA
     assert warmstart["__metadata__"]["not_opponent"] is True
@@ -79,9 +79,12 @@ def test_warmstart_transfers_compatible_actor_layers(tmp_path: Path):
     assert torch.equal(g1_policy["net_container.6.weight"], source_state["actor.6.weight"])
     assert torch.equal(g1_policy["net_container.6.bias"], source_state["actor.6.bias"])
 
-    h1_policy = warmstart[FIGHTER_B]["policy"]
-    assert h1_policy["net_container.6.weight"].shape == (19, 128)
-    assert warmstart[FIGHTER_B]["metadata"]["source_robot_name"] is None
+    g1_opponent_policy = warmstart[FIGHTER_B]["policy"]
+    assert g1_opponent_policy["net_container.0.weight"].shape == (512, observation_dim(29))
+    assert torch.equal(g1_opponent_policy["net_container.2.weight"], source_state["actor.2.weight"])
+    assert torch.equal(g1_opponent_policy["net_container.4.weight"], source_state["actor.4.weight"])
+    assert torch.equal(g1_opponent_policy["net_container.6.weight"], source_state["actor.6.weight"])
+    assert warmstart[FIGHTER_B]["metadata"]["source_robot_name"] == "g1_29dof"
 
 
 def test_sync_locomotion_artifact_writes_separate_registry(tmp_path: Path):
@@ -134,3 +137,33 @@ def test_apply_locomotion_warmstart_loads_fake_agent_modules(tmp_path: Path):
     loaded = apply_locomotion_warmstart(agent, output)
 
     assert loaded == [f"{FIGHTER_A}.policy", f"{FIGHTER_A}.value"]
+
+
+def test_apply_locomotion_warmstart_skips_mismatched_shapes(tmp_path: Path):
+    source = tmp_path / "unitree_g1_velocity.pt"
+    _rsl_checkpoint(source)
+    output = tmp_path / "warmstart.pt"
+    create_fight_warmstart(source, output)
+
+    class FakeAgent:
+        def __init__(self):
+            self.models = {
+                FIGHTER_B: {
+                    "policy": nn.Sequential(
+                        nn.Linear(observation_dim(19), 512),
+                        nn.ELU(),
+                        nn.Linear(512, 256),
+                        nn.ELU(),
+                        nn.Linear(256, 128),
+                        nn.ELU(),
+                        nn.Linear(128, 19),
+                    )
+                }
+            }
+
+    agent = FakeAgent()
+    before = agent.models[FIGHTER_B]["policy"][-1].weight.detach().clone()
+    loaded = apply_locomotion_warmstart(agent, output)
+
+    assert loaded == [f"{FIGHTER_B}.policy"]
+    assert torch.equal(agent.models[FIGHTER_B]["policy"][-1].weight, before)

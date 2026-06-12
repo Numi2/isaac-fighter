@@ -71,6 +71,7 @@ class ContactCfg:
     """Contact detection and logging settings."""
 
     force_normalizer: float = 600.0
+    strike_speed_normalizer: float = 2.5
     useful_contact_distance: float = 1.25
     useful_contact_min_closing_speed: float = 0.0
     robot_contact_proxy_gain: float = 0.85
@@ -125,6 +126,7 @@ class RewardScalesCfg:
     contact_intent: float = 2.20
     arena_control: float = 0.005
     useful_contact: float = 6.00
+    destabilizing_impact: float = 8.00
     opponent_destabilization: float = 5.00
     opponent_knockdown: float = 30.00
     stay_inside: float = 0.01

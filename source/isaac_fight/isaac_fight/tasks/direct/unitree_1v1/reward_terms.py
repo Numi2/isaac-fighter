@@ -28,7 +28,6 @@ class CombatRewardComputer:
         prev_distance = env._prev_distance_to_opponent[agent]
 
         up_z = env._up_z[agent]
-        opp_up_z = env._up_z[opponent]
         upright = torch.clamp((up_z - env.cfg.rules.knockdown_up_axis_z) / (1.0 - env.cfg.rules.knockdown_up_axis_z), 0.0, 1.0)
         lateral_ang_vel = torch.linalg.norm(env.root_ang_vel_b(agent)[:, :2], dim=-1)
         balance_recovery = upright * torch.exp(-0.20 * torch.square(lateral_ang_vel))
@@ -44,6 +43,7 @@ class CombatRewardComputer:
         stay_inside = torch.clamp((env.cfg.arena.radius - radial) / env.cfg.arena.radius, -1.0, 1.0)
 
         useful_contact = env._useful_contact[agent] * upright
+        destabilizing_impact = env._destabilizing_impact[agent] * upright
         opp_destabilization = env._proof_destabilization[agent]
         opponent_knockdown = env._new_knockdown[opponent].float() + 0.15 * env._knockdown[opponent].float()
 
@@ -64,6 +64,7 @@ class CombatRewardComputer:
             "contact_intent": scales.contact_intent * contact_intent,
             "arena_control": scales.arena_control * arena_control,
             "useful_contact": scales.useful_contact * useful_contact,
+            "destabilizing_impact": scales.destabilizing_impact * destabilizing_impact,
             "opponent_destabilization": scales.opponent_destabilization * opp_destabilization,
             "opponent_knockdown": scales.opponent_knockdown * opponent_knockdown,
             "stay_inside": scales.stay_inside * stay_inside,

@@ -29,6 +29,7 @@ def test_reward_terms_cover_requested_combat_terms():
         "balance_recovery",
         "controlled_approach",
         "useful_contact",
+        "destabilizing_impact",
         "opponent_knockdown",
         "final_win",
         "spin_without_contact",

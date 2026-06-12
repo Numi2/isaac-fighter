@@ -9,7 +9,7 @@ import torch
 
 from isaac_fight.utils.torch_math import heading_error_to_target, rotate_yaw_inverse
 
-BASE_FEATURE_DIM = 31
+BASE_FEATURE_DIM = 33
 OPPONENT_KEYPOINTS = 7
 KEYPOINT_FEATURE_DIM = OPPONENT_KEYPOINTS * 6
 
@@ -70,6 +70,8 @@ class CombatObservationBuilder:
                 torch.clamp(env._useful_contact[agent], 0.0, 5.0),
                 torch.clamp(env._energy_ema[agent] / env.cfg.rewards.energy_normalizer, 0.0, 5.0),
                 torch.clamp(env._opponent_destabilization[agent], 0.0, 5.0),
+                torch.clamp(env._strike_speed[agent] / env.cfg.contact.strike_speed_normalizer, 0.0, 5.0),
+                torch.clamp(env._destabilizing_impact[agent], 0.0, 5.0),
             ),
             dim=-1,
         )

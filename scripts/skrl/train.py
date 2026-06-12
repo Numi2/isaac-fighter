@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402,I001
 # Copyright (c) 2026, Isaac Fight contributors.
 # SPDX-License-Identifier: BSD-3-Clause
 
@@ -97,7 +98,11 @@ else:
 def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa: ANN001
     if not hasattr(env_cfg, "fighter_a"):
         return
+    refresh_spaces = False
     if preset == "fast_contact_bootstrap":
+        env_cfg.fighter_a.robot_name = "g1_29dof"
+        env_cfg.fighter_b.robot_name = "g1_29dof"
+        refresh_spaces = True
         env_cfg.episode_length_s = 10.0
         env_cfg.arena.radius = 2.0
         env_cfg.fighter_a.spawn_xy = (-0.45, 0.0)
@@ -120,6 +125,8 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.contact.useful_contact_distance = 1.95
         env_cfg.curriculum.enabled = False
         agent_cfg["agent"]["rollouts"] = max(int(agent_cfg["agent"]["rollouts"]), 64)
+    if refresh_spaces and hasattr(env_cfg, "__post_init__"):
+        env_cfg.__post_init__()
 
 
 def _adapt_checkpoint_observation_space(path: str, env_cfg, algorithm_name: str, log_dir: str) -> str:  # noqa: ANN001
@@ -232,7 +239,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "algorithm": algorithm.upper(),
             "task": args_cli.task,
             "seed": args_cli.seed,
-            "reward_version": "combat_flywheel_v1",
+            "reward_version": "combat_flywheel_v2",
             "config_hash": hashlib.sha256(
                 json.dumps(
                     {
