@@ -5,27 +5,30 @@
 
 from __future__ import annotations
 
-import math
 import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-import torch
-
 import isaaclab.sim as sim_utils
+import torch
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectMARLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 
-from isaac_fight.assets.robots.unitree import get_controlled_joint_names_from_cfg_or_spec, get_unitree_robot_cfg, get_unitree_robot_spec
+from isaac_fight.assets.robots.unitree import (
+    get_controlled_joint_names_from_cfg_or_spec,
+    get_unitree_robot_cfg,
+    get_unitree_robot_spec,
+)
 from isaac_fight.utils.torch_math import normalize, quat_apply_inverse, quat_from_yaw, rotate_yaw_inverse
 
+from .contact_filters import max_combat_contact_force
 from .fight_common import FighterRuntimeInfo
 from .fight_rules import FightRuleEngine
 from .fighter_ids import FIGHTER_A, FIGHTER_B, FIGHTERS, opponent_of
-from .observations import CombatObservationBuilder, OPPONENT_KEYPOINTS
+from .observations import OPPONENT_KEYPOINTS, CombatObservationBuilder
 from .replay import MatchReplayRecorder, ReplayHeader
 from .reward_terms import CombatRewardComputer
 from .unitree_1v1_env_cfg import GhostFighterUnitree1v1EnvCfg
@@ -493,7 +496,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         contact_proxy = torch.relu(closing_speed - self.cfg.contact.useful_contact_min_closing_speed) * proximity
         self._contact_intent[agent] = torch.clamp((0.25 + torch.relu(closing_speed)) * proximity, 0.0, 2.0)
 
-        candidate_contact_force = self._net_contact_force(agent)
+        lower_body_attack_window = distance < self.cfg.contact.useful_contact_distance
+        candidate_contact_force = self._net_contact_force(agent, include_lower_body_contacts=lower_body_attack_window)
         ground_force = self._ground_or_scene_contact_force(agent)
         proxy_engagement = contact_proxy * self.cfg.contact.force_normalizer
         opp_height_drop = torch.relu(self._prev_root_height[opponent] - self.root_pos(opponent)[:, 2])
@@ -584,7 +588,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         margin = torch.minimum(pos - lo, hi - pos) / span
         self._joint_limit_penalty[agent] = torch.mean(torch.relu(0.10 - margin) / 0.10, dim=-1)
 
-    def _net_contact_force(self, agent: str) -> torch.Tensor:
+    def _net_contact_force(self, agent: str, include_lower_body_contacts: torch.Tensor | bool | None = None) -> torch.Tensor:
         sensor_names = (f"contact_{agent}", agent, f"{agent}_contact")
         for name in sensor_names:
             sensor = self.scene.sensors.get(name) if hasattr(self.scene, "sensors") else None
@@ -596,12 +600,11 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             if hasattr(sensor.data, "net_forces_w"):
                 forces = sensor.data.net_forces_w
                 body_names = getattr(sensor, "body_names", ())
-                if body_names and forces.shape[1] == len(body_names):
-                    keep = [not any(token in name.lower() for token in ("foot", "ankle", "toe", "sole")) for name in body_names]
-                    if any(keep):
-                        mask = torch.tensor(keep, dtype=torch.bool, device=self.device)
-                        forces = forces[:, mask]
-                return torch.linalg.norm(forces, dim=-1).amax(dim=-1)
+                return max_combat_contact_force(
+                    forces,
+                    body_names=body_names,
+                    include_lower_body_contacts=include_lower_body_contacts,
+                )
         return torch.zeros(self.num_envs, device=self.device)
 
     def _ground_or_scene_contact_force(self, agent: str) -> torch.Tensor:
