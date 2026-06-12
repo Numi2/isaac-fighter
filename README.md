@@ -4,6 +4,10 @@ Standalone Isaac Lab extension for emergent 1v1 humanoid combat.
 
 ![G1 self-play visual milestone](docs/assets/g1-self-play-milestone-agent3072.gif)
 
+![G1 v11 current checkpoint](docs/assets/g1-v11-agent4096-current.gif)
+
+![G1 v12 current checkpoint](docs/assets/g1-v12-agent2048-current.gif)
+
 Early G1-vs-G1 self-play visual milestone from the fast combat bootstrap run. This is intentionally tracked so we can periodically replace it as the policies improve.
 
 `GhostFighter-Unitree-1v1-Direct-v0` is a true `DirectMARLEnv`: two independent Unitree humanoid articulations, asymmetric action/observation spaces, per-agent rewards, per-agent terminations, round logic, replay traces, tournament evaluation, and a persistent self-play policy pool.
