@@ -47,6 +47,7 @@ class CombatRewardComputer:
         support_quality = env._support_quality(agent)
         support_contact = support_quality * standing_height
         low_base_height = torch.relu(0.88 - height_ratio) * (1.0 + 2.0 * (1.0 - upright))
+        standing_pose = env._standing_pose_quality(agent) * upright
         support_center = env._support_center_xy(agent)
         support_radius = env._support_radius(agent)
         root_support_distance = torch.linalg.norm(root_pos[:, :2] - support_center, dim=-1)
@@ -71,6 +72,7 @@ class CombatRewardComputer:
         warmup_gate = (episode_time < warmup_s).float()
         after_warmup = torch.clamp((episode_time - warmup_s) / 0.75, 0.0, 1.0)
         early_fall_window = torch.clamp((2.0 - episode_time) / 2.0, 0.0, 1.0)
+        warmup_action_restraint = warmup_gate * env._posture_action_magnitude(agent) * (1.0 + 2.0 * (1.0 - upright))
 
         heading_error = heading_error_to_target(env.root_quat(agent), rel_pos)
         facing_gate = torch.clamp(torch.cos(heading_error), min=0.0)
@@ -193,6 +195,8 @@ class CombatRewardComputer:
             "standing_height": scales.standing_height * standing_height,
             "support_contact": scales.support_contact * support_contact,
             "low_base_height": -scales.low_base_height * low_base_height,
+            "standing_pose": scales.standing_pose * standing_pose,
+            "warmup_action_restraint": -scales.warmup_action_restraint * warmup_action_restraint,
             "center_of_mass_over_support": scales.center_of_mass_over_support * center_of_mass_over_support,
             "foot_support_quality": scales.foot_support_quality * foot_support_quality,
             "foot_slip": -scales.foot_slip * foot_slip,

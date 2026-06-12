@@ -142,34 +142,38 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.fighter_b.spawn_forward_speed = 0.0
         env_cfg.fighter_a.spawn_forward_speed_noise = 0.0
         env_cfg.fighter_b.spawn_forward_speed_noise = 0.0
-        env_cfg.fighter_a.action_scale = 0.20
-        env_cfg.fighter_b.action_scale = 0.20
-        env_cfg.fighter_a.action_smoothing = 0.35
-        env_cfg.fighter_b.action_smoothing = 0.35
+        env_cfg.fighter_a.action_scale = 0.12
+        env_cfg.fighter_b.action_scale = 0.12
+        env_cfg.fighter_a.action_smoothing = 0.65
+        env_cfg.fighter_b.action_smoothing = 0.65
         env_cfg.contact.useful_contact_distance = 1.45
         env_cfg.contact.attack_memory_s = 0.65
         env_cfg.contact.fall_credit_min_attack = 0.08
         env_cfg.curriculum.enabled = True
-        env_cfg.curriculum.standing_warmup_s = max(float(env_cfg.curriculum.standing_warmup_s), 1.50)
-        env_cfg.curriculum.no_engagement_timeout_s = 4.5
-        env_cfg.curriculum.no_engagement_grace_s = 2.5
+        env_cfg.curriculum.standing_warmup_s = max(float(env_cfg.curriculum.standing_warmup_s), 2.25)
+        env_cfg.curriculum.action_hold_s = max(float(env_cfg.curriculum.action_hold_s), 1.20)
+        env_cfg.curriculum.action_ramp_s = max(float(env_cfg.curriculum.action_ramp_s), 1.10)
+        env_cfg.curriculum.no_engagement_timeout_s = 5.2
+        env_cfg.curriculum.no_engagement_grace_s = 3.2
         env_cfg.curriculum.proxy_gain_anneal_steps = min(int(env_cfg.curriculum.proxy_gain_anneal_steps), 20_000)
         env_cfg.curriculum.min_proxy_gain = max(float(env_cfg.curriculum.min_proxy_gain), 0.20)
         env_cfg.self_play.opponent_update_interval = min(int(env_cfg.self_play.opponent_update_interval), 160)
         env_cfg.self_play.live_self_play_fraction = max(float(env_cfg.self_play.live_self_play_fraction), 0.45)
         env_cfg.rewards.contact_intent = max(float(env_cfg.rewards.contact_intent), 2.8)
-        env_cfg.rewards.standing_height = max(float(env_cfg.rewards.standing_height), 9.0)
-        env_cfg.rewards.support_contact = max(float(env_cfg.rewards.support_contact), 5.0)
-        env_cfg.rewards.low_base_height = max(float(env_cfg.rewards.low_base_height), 35.0)
-        env_cfg.rewards.center_of_mass_over_support = max(float(env_cfg.rewards.center_of_mass_over_support), 8.0)
-        env_cfg.rewards.foot_support_quality = max(float(env_cfg.rewards.foot_support_quality), 6.0)
-        env_cfg.rewards.foot_slip = max(float(env_cfg.rewards.foot_slip), 5.0)
-        env_cfg.rewards.base_pitch_roll = max(float(env_cfg.rewards.base_pitch_roll), 12.0)
-        env_cfg.rewards.angular_stumble = max(float(env_cfg.rewards.angular_stumble), 6.0)
-        env_cfg.rewards.knee_collapse = max(float(env_cfg.rewards.knee_collapse), 8.0)
-        env_cfg.rewards.leg_extension_posture = max(float(env_cfg.rewards.leg_extension_posture), 4.0)
-        env_cfg.rewards.airborne_without_attack = max(float(env_cfg.rewards.airborne_without_attack), 14.0)
-        env_cfg.rewards.fall_early = max(float(env_cfg.rewards.fall_early), 28.0)
+        env_cfg.rewards.standing_height = max(float(env_cfg.rewards.standing_height), 18.0)
+        env_cfg.rewards.support_contact = max(float(env_cfg.rewards.support_contact), 9.0)
+        env_cfg.rewards.low_base_height = max(float(env_cfg.rewards.low_base_height), 80.0)
+        env_cfg.rewards.standing_pose = max(float(env_cfg.rewards.standing_pose), 12.0)
+        env_cfg.rewards.warmup_action_restraint = max(float(env_cfg.rewards.warmup_action_restraint), 8.0)
+        env_cfg.rewards.center_of_mass_over_support = max(float(env_cfg.rewards.center_of_mass_over_support), 14.0)
+        env_cfg.rewards.foot_support_quality = max(float(env_cfg.rewards.foot_support_quality), 10.0)
+        env_cfg.rewards.foot_slip = max(float(env_cfg.rewards.foot_slip), 8.0)
+        env_cfg.rewards.base_pitch_roll = max(float(env_cfg.rewards.base_pitch_roll), 28.0)
+        env_cfg.rewards.angular_stumble = max(float(env_cfg.rewards.angular_stumble), 12.0)
+        env_cfg.rewards.knee_collapse = max(float(env_cfg.rewards.knee_collapse), 18.0)
+        env_cfg.rewards.leg_extension_posture = max(float(env_cfg.rewards.leg_extension_posture), 8.0)
+        env_cfg.rewards.airborne_without_attack = max(float(env_cfg.rewards.airborne_without_attack), 24.0)
+        env_cfg.rewards.fall_early = max(float(env_cfg.rewards.fall_early), 90.0)
         env_cfg.rewards.recovery_reward = max(float(env_cfg.rewards.recovery_reward), 5.0)
         env_cfg.rewards.backward_motion = max(float(env_cfg.rewards.backward_motion), 18.0)
         env_cfg.rewards.backward_lean = max(float(env_cfg.rewards.backward_lean), 24.0)
@@ -181,8 +185,8 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.rewards.stance_width = max(float(env_cfg.rewards.stance_width), 3.0)
         env_cfg.rewards.foot_clearance = max(float(env_cfg.rewards.foot_clearance), 1.5)
         env_cfg.rewards.cadence_or_alternating_support = max(float(env_cfg.rewards.cadence_or_alternating_support), 1.4)
-        env_cfg.rewards.root_height_velocity_down = max(float(env_cfg.rewards.root_height_velocity_down), 8.0)
-        env_cfg.rewards.torso_only_motion = max(float(env_cfg.rewards.torso_only_motion), 14.0)
+        env_cfg.rewards.root_height_velocity_down = max(float(env_cfg.rewards.root_height_velocity_down), 25.0)
+        env_cfg.rewards.torso_only_motion = max(float(env_cfg.rewards.torso_only_motion), 24.0)
         env_cfg.rewards.attack_momentum = max(float(env_cfg.rewards.attack_momentum), 3.4)
         env_cfg.rewards.stable_contact_attack = max(float(env_cfg.rewards.stable_contact_attack), 5.0)
         env_cfg.rewards.limb_contact_reward = max(float(env_cfg.rewards.limb_contact_reward), 4.0)
@@ -202,14 +206,14 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.rewards.mutual_fall_hard_penalty = max(float(env_cfg.rewards.mutual_fall_hard_penalty), 35.0)
         env_cfg.rewards.self_contact_abuse = max(float(env_cfg.rewards.self_contact_abuse), 5.0)
         env_cfg.rewards.wall_boundary_escape = max(float(env_cfg.rewards.wall_boundary_escape), 7.0)
-        env_cfg.rewards.self_fall = max(float(env_cfg.rewards.self_fall), 45.0)
+        env_cfg.rewards.self_fall = max(float(env_cfg.rewards.self_fall), 120.0)
         env_cfg.rewards.joint_limit_slam = max(float(env_cfg.rewards.joint_limit_slam), 2.5)
         env_cfg.rewards.action_rate = max(float(env_cfg.rewards.action_rate), 0.35)
         env_cfg.rewards.torque_spike = max(float(env_cfg.rewards.torque_spike), 0.35)
         env_cfg.rewards.spin_flail_penalty = max(float(env_cfg.rewards.spin_flail_penalty), 5.0)
         env_cfg.rewards.passive_survival = max(float(env_cfg.rewards.passive_survival), 4.0)
         env_cfg.rewards.contact_without_progress = max(float(env_cfg.rewards.contact_without_progress), 5.0)
-        env_cfg.rewards.warmup_stand_reward = max(float(env_cfg.rewards.warmup_stand_reward), 6.0)
+        env_cfg.rewards.warmup_stand_reward = max(float(env_cfg.rewards.warmup_stand_reward), 14.0)
         env_cfg.rewards.combat_gate = max(float(env_cfg.rewards.combat_gate), 1.5)
         env_cfg.rewards.progressive_attack_gate = max(float(env_cfg.rewards.progressive_attack_gate), 2.5)
         env_cfg.rewards.fall_cause_credit = max(float(env_cfg.rewards.fall_cause_credit), 18.0)
@@ -349,7 +353,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "algorithm": algorithm.upper(),
             "task": args_cli.task,
             "seed": args_cli.seed,
-            "reward_version": "full_reward_surface_v10",
+            "reward_version": "standing_first_v11",
             "config_hash": hashlib.sha256(
                 json.dumps(
                     {

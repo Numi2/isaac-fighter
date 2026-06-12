@@ -87,6 +87,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._waist_action_id_tensors: dict[str, torch.Tensor] = {}
         self._leg_action_id_tensors: dict[str, torch.Tensor] = {}
         self._knee_action_id_tensors: dict[str, torch.Tensor] = {}
+        self._posture_action_id_tensors: dict[str, torch.Tensor] = {}
         self._action_scale_tensors: dict[str, torch.Tensor] = {}
         self._resolve_controlled_joints()
         self._allocate_buffers()
@@ -217,8 +218,12 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 if any(token in name.lower() for token in ("hip", "knee", "ankle"))
             ]
             knee_action_ids = [idx for idx, name in enumerate(resolved_names) if "knee" in name.lower()]
+            posture_action_ids = sorted(set(leg_action_ids + waist_action_ids))
             self._leg_action_id_tensors[agent] = torch.as_tensor(leg_action_ids, dtype=torch.long, device=self.device)
             self._knee_action_id_tensors[agent] = torch.as_tensor(knee_action_ids, dtype=torch.long, device=self.device)
+            self._posture_action_id_tensors[agent] = torch.as_tensor(
+                posture_action_ids or list(range(action_dim)), dtype=torch.long, device=self.device
+            )
             self._resolve_keypoint_bodies(agent)
             self._resolve_support_bodies(agent)
 
@@ -384,6 +389,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 raise RuntimeError(
                     f"{agent} action has shape {tuple(raw.shape)}, expected last dim {self._runtime[agent].action_dim}"
                 )
+            raw = self._apply_standing_warmup_action_gate(raw)
             self._last_actions[agent].copy_(self._actions[agent])
             smoothing = float(fighter_cfgs[agent].action_smoothing)
             self._actions[agent].mul_(smoothing).add_(raw * (1.0 - smoothing))
@@ -407,6 +413,15 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             hi = limits[:, ids, 1]
             target = torch.maximum(torch.minimum(target, hi), lo)
         return target
+
+    def _apply_standing_warmup_action_gate(self, raw: torch.Tensor) -> torch.Tensor:
+        if not self.cfg.curriculum.enabled:
+            return raw
+        hold_s = max(0.0, float(getattr(self.cfg.curriculum, "action_hold_s", 0.0)))
+        ramp_s = max(1.0e-6, float(getattr(self.cfg.curriculum, "action_ramp_s", 0.0)))
+        episode_time = self.episode_length_buf.float() * self.step_dt
+        gate = torch.clamp((episode_time - hold_s) / ramp_s, 0.0, 1.0).unsqueeze(-1)
+        return raw * gate
 
     @staticmethod
     def _joint_action_scale_multiplier(joint_name: str) -> float:
@@ -1058,6 +1073,19 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             return self._stance_quality(agent)
         leg_deviation = self.joint_pos_rel(agent).index_select(1, leg_ids)
         return torch.exp(-torch.mean(torch.square(leg_deviation / 0.45), dim=-1))
+
+    def _standing_pose_quality(self, agent: str) -> torch.Tensor:
+        posture_ids = self._posture_action_id_tensors.get(agent)
+        if posture_ids is None or posture_ids.numel() == 0:
+            return self._stance_quality(agent)
+        deviation = self.joint_pos_rel(agent).index_select(1, posture_ids)
+        return torch.exp(-torch.mean(torch.square(deviation / 0.35), dim=-1))
+
+    def _posture_action_magnitude(self, agent: str) -> torch.Tensor:
+        posture_ids = self._posture_action_id_tensors.get(agent)
+        if posture_ids is None or posture_ids.numel() == 0:
+            return torch.mean(torch.square(self._actions[agent]), dim=-1)
+        return torch.mean(torch.square(self._actions[agent].index_select(1, posture_ids)), dim=-1)
 
     def _knee_collapse(self, agent: str) -> torch.Tensor:
         knee_ids = self._knee_action_id_tensors.get(agent)

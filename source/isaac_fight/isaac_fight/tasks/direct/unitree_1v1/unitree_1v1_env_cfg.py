@@ -116,6 +116,8 @@ class CurriculumCfg:
 
     enabled: bool = True
     standing_warmup_s: float = 1.25
+    action_hold_s: float = 0.80
+    action_ramp_s: float = 0.80
     no_engagement_timeout_s: float = 3.0
     no_engagement_grace_s: float = 1.5
     engagement_min_training_contact: float = 0.02
@@ -132,6 +134,8 @@ class RewardScalesCfg:
     standing_height: float = 2.50
     support_contact: float = 1.60
     low_base_height: float = 8.00
+    standing_pose: float = 1.60
+    warmup_action_restraint: float = 1.20
     center_of_mass_over_support: float = 2.00
     foot_support_quality: float = 1.80
     foot_slip: float = 1.60
