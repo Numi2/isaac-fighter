@@ -607,18 +607,15 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             0.50 * torch.clamp(opp_lateral_ang_vel / 4.0, 0.0, 2.0)
             + torch.clamp(opp_tilt / max(1.0 - self.cfg.rules.knockdown_up_axis_z, 1.0e-6), 0.0, 2.0)
         )
-        opp_velocity_delta = self.root_lin_vel_w(opponent) - self._prev_root_lin_vel_w[opponent]
-        opp_drive_speed = torch.relu(torch.sum(self.root_lin_vel_w(opponent)[:, :2] * rel_dir[:, :2], dim=-1))
-        opp_drive_impulse = torch.relu(torch.sum(opp_velocity_delta[:, :2] * rel_dir[:, :2], dim=-1))
+        opp_root_vel_xy = self.root_lin_vel_w(opponent)[:, :2]
+        opp_velocity_delta_xy = opp_root_vel_xy - self._prev_root_lin_vel_w[opponent][:, :2]
+        opp_drive_speed = torch.linalg.norm(opp_root_vel_xy, dim=-1)
+        opp_drive_impulse = torch.linalg.norm(opp_velocity_delta_xy, dim=-1) / max(self.step_dt * 12.0, 1.0e-6)
         drive_pressure = (
             force_term
             * strike_speed_term
             * physical_contact_gate
-            * torch.clamp(
-                (opp_drive_speed + 2.0 * opp_drive_impulse) / self.cfg.contact.strike_speed_normalizer,
-                0.0,
-                3.0,
-            )
+            * (0.25 * torch.clamp(opp_drive_speed / self.cfg.contact.strike_speed_normalizer, 0.0, 2.0) + 0.75 * torch.clamp(opp_drive_impulse, 0.0, 3.0))
         )
         support_break_pressure = self._support_break_pressure_term(opponent, force_term, physical_contact_gate)
         training_contact_gate = torch.maximum(physical_contact_gate, (contact_proxy > 0.05).float() * close_to_opponent)
