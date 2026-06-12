@@ -2,7 +2,7 @@
 # Copyright (c) 2026, Isaac Fight contributors.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Train GhostFighter with skrl IPPO/MAPPO and self-play pool tracking."""
+"""Train GhostFighter with skrl IPPO/MAPPO and closed-loop self-play."""
 
 from __future__ import annotations
 
@@ -25,9 +25,10 @@ parser.add_argument("--seed", type=int, default=None)
 parser.add_argument("--checkpoint", type=str, default=None)
 parser.add_argument("--max_iterations", type=int, default=None)
 parser.add_argument("--ml_framework", type=str, default="torch", choices=["torch", "jax", "jax-numpy"])
-parser.add_argument("--self_play", action="store_true", default=True, help="Track policy versions in a self-play pool.")
+parser.add_argument("--self_play", action="store_true", default=True, help="Track policy versions and train against frozen pool opponents.")
 parser.add_argument("--no_self_play", action="store_false", dest="self_play")
-parser.add_argument("--historical_opponent", action="store_true", default=False, help="Freeze opponent actions from sampled skrl/TorchScript pool policies.")
+parser.add_argument("--historical_opponent", action="store_true", default=True, help="Freeze opponent actions from sampled skrl/TorchScript pool policies.")
+parser.add_argument("--no_historical_opponent", action="store_false", dest="historical_opponent")
 parser.add_argument("--active_agent", type=str, default="fighter_a", choices=["fighter_a", "fighter_b"])
 parser.add_argument("--pool_dir", type=str, default="policy_pool")
 parser.add_argument("--snapshot_interval", type=int, default=50)

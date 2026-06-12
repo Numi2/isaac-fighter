@@ -147,6 +147,7 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         elo_window: float = 250.0,
         weakness_bias: float = 0.65,
         latest_bias: float = 0.15,
+        train_active_only: bool = True,
     ):
         super().__init__(env)
         self.pool = pool
@@ -157,6 +158,7 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         self.elo_window = elo_window
         self.weakness_bias = weakness_bias
         self.latest_bias = latest_bias
+        self.train_active_only = train_active_only
         self._last_obs: dict[str, torch.Tensor] | None = None
         self._current_sample: OpponentSample | None = None
         self._backend: PolicyBackend | None = None
@@ -172,6 +174,9 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
             actions = dict(actions)
             actions[self.opponent_agent] = self._backend.act(self._last_obs[self.opponent_agent])
         obs, rewards, terminated, truncated, infos = self.env.step(actions)
+        if self.train_active_only and self._backend is not None and self.opponent_agent in rewards:
+            rewards = dict(rewards)
+            rewards[self.opponent_agent] = torch.zeros_like(rewards[self.opponent_agent])
         self._last_obs = obs
         if hasattr(self.env.unwrapped, "extras"):
             extras = self.env.unwrapped.extras
@@ -227,7 +232,7 @@ def _safe_name(value: str) -> str:
 
 
 def maybe_wrap_historical_opponent(env: gym.Env, cfg, log_dir: str | Path | None, args) -> gym.Env:  # noqa: ANN001
-    if not getattr(args, "historical_opponent", False):
+    if not getattr(args, "self_play", True) or not getattr(args, "historical_opponent", True):
         return env
     pool_dir = getattr(args, "pool_dir", None) or getattr(cfg.self_play, "pool_dir", "policy_pool")
     pool = OpponentPool(pool_dir)
@@ -240,6 +245,7 @@ def maybe_wrap_historical_opponent(env: gym.Env, cfg, log_dir: str | Path | None
         elo_window=cfg.self_play.elo_window,
         weakness_bias=cfg.self_play.weakness_bias,
         latest_bias=cfg.self_play.latest_bias,
+        train_active_only=True,
     )
 
 
