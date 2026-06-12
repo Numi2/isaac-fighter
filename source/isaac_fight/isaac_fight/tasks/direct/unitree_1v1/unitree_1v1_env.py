@@ -16,6 +16,7 @@ import torch
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectMARLEnv
+from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 
 from isaac_fight.assets.robots.unitree import get_controlled_joint_names_from_cfg_or_spec, get_unitree_robot_cfg, get_unitree_robot_spec
@@ -61,6 +62,22 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._robot_cfgs[FIGHTER_B] = get_unitree_robot_cfg(self.cfg.fighter_b.robot_name, prim_path=prim_b)
         self.robots[FIGHTER_A] = Articulation(self._robot_cfgs[FIGHTER_A])
         self.robots[FIGHTER_B] = Articulation(self._robot_cfgs[FIGHTER_B])
+        self.scene.sensors[f"contact_{FIGHTER_A}"] = ContactSensor(
+            ContactSensorCfg(
+                prim_path=f"{prim_a}/.*",
+                update_period=0.0,
+                history_length=1,
+                filter_prim_paths_expr=[f"{prim_b}/.*"],
+            )
+        )
+        self.scene.sensors[f"contact_{FIGHTER_B}"] = ContactSensor(
+            ContactSensorCfg(
+                prim_path=f"{prim_b}/.*",
+                update_period=0.0,
+                history_length=1,
+                filter_prim_paths_expr=[f"{prim_a}/.*"],
+            )
+        )
 
         self._spawn_ground()
         self._spawn_arena_boundary_visuals()
@@ -493,7 +510,12 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         sensor_names = (f"contact_{agent}", agent, f"{agent}_contact")
         for name in sensor_names:
             sensor = self.scene.sensors.get(name) if hasattr(self.scene, "sensors") else None
-            if sensor is not None and hasattr(sensor, "data") and hasattr(sensor.data, "net_forces_w"):
+            if sensor is None or not hasattr(sensor, "data"):
+                continue
+            force_matrix = getattr(sensor.data, "force_matrix_w", None)
+            if force_matrix is not None:
+                return torch.linalg.norm(force_matrix, dim=-1).amax(dim=(-1, -2))
+            if hasattr(sensor.data, "net_forces_w"):
                 return torch.linalg.norm(sensor.data.net_forces_w, dim=-1).amax(dim=-1)
         return torch.zeros(self.num_envs, device=self.device)
 
