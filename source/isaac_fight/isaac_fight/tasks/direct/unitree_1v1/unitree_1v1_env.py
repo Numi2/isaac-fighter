@@ -343,6 +343,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             breakdown = self._reward_computer.compute(self, agent, opponent)
             rewards[agent] = breakdown.total
             self._last_reward_terms[agent] = breakdown.terms
+            clean_opponent_fall = self._new_fall[opponent].float() * (self._proof_impact[agent] > 0.0).float() * (~self._fallen[agent]).float()
+            mutual_fall = self._new_fall[agent].float() * self._fallen[opponent].float()
             combat_metrics = {
                 "combat_useful_contact": self._useful_contact[agent],
                 "combat_contact_intent": self._contact_intent[agent],
@@ -365,10 +367,12 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 "combat_proof_destabilization": self._proof_destabilization[agent],
                 "combat_opponent_fall_events": self._new_fall[opponent].float(),
                 "combat_proof_opponent_fall_events": self._new_fall[opponent].float() * (self._proof_impact[agent] > 0.0).float(),
+                "combat_clean_opponent_fall_events": clean_opponent_fall,
                 "combat_opponent_knockdown_events": self._new_knockdown[opponent].float(),
                 "combat_proof_opponent_knockdown_events": self._new_knockdown[opponent].float() * (self._proof_impact[agent] > 0.0).float(),
                 "combat_self_fall_events": self._new_fall[agent].float(),
                 "combat_self_knockdown_events": self._new_knockdown[agent].float(),
+                "combat_mutual_fall_events": mutual_fall,
                 "combat_inactivity": self._inactivity[agent],
                 "combat_spin_without_contact": self._spin_without_contact[agent],
                 "combat_uncontrolled_collision": self._uncontrolled_collision[agent],
@@ -522,6 +526,10 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 )
                 self._fall_events[agent] += self._new_fall[agent].float()
                 self._knockdown_events[agent] += self._new_knockdown[agent].float()
+                self_standing = (~self._fallen[agent]).float()
+                opponent_fall_score = self._new_fall[opponent].float() * (self._proof_impact[agent] > 0.0).float() * self_standing
+                opponent_knockdown_score = self._new_knockdown[opponent].float() * self_standing
+                mutual_fall_score = self._new_fall[agent].float() * self._fallen[opponent].float()
                 self._score[agent] += (
                     0.10 * self._attack_momentum[agent]
                     + 0.20 * self._useful_contact[agent]
@@ -530,8 +538,10 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                     + 0.25 * self._drive_pressure[agent]
                     + 0.25 * self._support_break_pressure[agent]
                     + 0.30 * self._proof_destabilization[agent]
-                    + 2.0 * self._new_fall[opponent].float() * (self._proof_impact[agent] > 0.0).float()
-                    + 5.0 * self._new_knockdown[opponent].float()
+                    + 2.0 * opponent_fall_score
+                    + 5.0 * opponent_knockdown_score
+                    - 3.0 * self._new_fall[agent].float()
+                    - 2.5 * mutual_fall_score
                     + 0.002 * torch.clamp(1.0 - torch.linalg.norm(self.root_pos(agent)[:, :2], dim=-1) / self.cfg.arena.radius, 0.0, 1.0)
                 )
         if advance:
@@ -805,10 +815,12 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             "proof_destabilization": 0.0,
             "opponent_fall_events": 0.0,
             "proof_opponent_fall_events": 0.0,
+            "clean_opponent_fall_events": 0.0,
             "opponent_knockdown_events": 0.0,
             "proof_opponent_knockdown_events": 0.0,
             "self_fall_events": 0.0,
             "self_knockdown_events": 0.0,
+            "mutual_fall_events": 0.0,
             "inactivity": 0.0,
             "spin_without_contact": 0.0,
             "uncontrolled_collision": 0.0,

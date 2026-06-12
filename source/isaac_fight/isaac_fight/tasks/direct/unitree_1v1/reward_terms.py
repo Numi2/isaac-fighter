@@ -49,9 +49,12 @@ class CombatRewardComputer:
         drive_pressure = env._drive_pressure[agent] * upright
         support_break_pressure = env._support_break_pressure[agent] * upright
         opp_destabilization = env._proof_destabilization[agent]
-        proof_gate = (env._proof_impact[agent] > 0.0).float()
-        opponent_fall = proof_gate * (env._new_fall[opponent].float() + 0.08 * env._fallen[opponent].float())
-        opponent_knockdown = env._new_knockdown[opponent].float() + 0.15 * env._knockdown[opponent].float()
+        proof = (env._proof_impact[agent] > 0.0).float()
+        self_fall = env._fallen[agent].float()
+        clean_attack = proof * upright * (1.0 - self_fall)
+        opponent_fall = clean_attack * (env._new_fall[opponent].float() + 0.08 * env._fallen[opponent].float())
+        opponent_knockdown = clean_attack * (env._new_knockdown[opponent].float() + 0.15 * env._knockdown[opponent].float())
+        mutual_fall = self_fall * env._fallen[opponent].float()
 
         energy = env._energy[agent]
         torque_penalty = env._torque_penalty[agent]
@@ -78,9 +81,10 @@ class CombatRewardComputer:
             "opponent_fall": scales.opponent_fall * opponent_fall,
             "opponent_destabilization": scales.opponent_destabilization * opp_destabilization,
             "opponent_knockdown": scales.opponent_knockdown * opponent_knockdown,
+            "mutual_fall": -scales.mutual_fall * mutual_fall,
             "stay_inside": scales.stay_inside * stay_inside,
             "energy_efficiency": -scales.energy * energy,
-            "self_fall": -scales.self_fall * env._fallen[agent].float(),
+            "self_fall": -scales.self_fall * self_fall,
             "out_of_bounds": -scales.out_of_bounds * env._out_of_bounds[agent].float(),
             "excessive_torque": -scales.excessive_torque * torque_penalty,
             "joint_limit_abuse": -scales.joint_limit_abuse * joint_limit_penalty,
