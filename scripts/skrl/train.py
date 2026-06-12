@@ -173,13 +173,13 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.rewards.self_fall = max(float(env_cfg.rewards.self_fall), 45.0)
         env_cfg.rewards.energy = min(float(env_cfg.rewards.energy), 0.010)
         env_cfg.rewards.jitter = min(float(env_cfg.rewards.jitter), 0.08)
-        env_cfg.diagnostics.reward_terms_interval = max(int(env_cfg.diagnostics.reward_terms_interval), 64)
+        env_cfg.diagnostics.reward_terms_interval = max(int(env_cfg.diagnostics.reward_terms_interval), 256)
         agent_cfg["agent"]["rollouts"] = 16
         agent_cfg["agent"]["learning_epochs"] = min(int(agent_cfg["agent"]["learning_epochs"]), 3)
         agent_cfg["agent"]["mini_batches"] = min(int(agent_cfg["agent"]["mini_batches"]), 4)
         agent_cfg["agent"]["entropy_loss_scale"] = max(float(agent_cfg["agent"]["entropy_loss_scale"]), 0.008)
         agent_cfg["agent"]["experiment"]["write_interval"] = max(
-            int(agent_cfg["agent"]["experiment"]["write_interval"]), 200
+            int(agent_cfg["agent"]["experiment"]["write_interval"]), 600
         )
     elif preset == "full_fight_self_play":
         env_cfg.episode_length_s = 30.0
