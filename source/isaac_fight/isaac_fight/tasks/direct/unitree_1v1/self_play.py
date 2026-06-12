@@ -240,16 +240,17 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
                 mask = self._freeze_masks.get(agent)
                 if mask is None or not bool(mask.any().item()):
                     continue
-                frozen_actions = backend.act(self._last_obs[agent])
-                if frozen_actions.shape != actions[agent].shape:
+                frozen_actions = backend.act(self._last_obs[agent][mask])
+                expected_shape = actions[agent][mask].shape
+                if frozen_actions.shape != expected_shape:
                     print(
                         f"[WARN] Frozen opponent action shape mismatch for {agent}: "
-                        f"got {tuple(frozen_actions.shape)}, expected {tuple(actions[agent].shape)}",
+                        f"got {tuple(frozen_actions.shape)}, expected {tuple(expected_shape)}",
                         flush=True,
                     )
                     continue
                 mixed_actions = actions[agent].clone()
-                mixed_actions[mask] = frozen_actions[mask]
+                mixed_actions[mask] = frozen_actions
                 actions[agent] = mixed_actions
                 overwritten_masks[agent] = mask
         obs, rewards, terminated, truncated, infos = self.env.step(actions)
