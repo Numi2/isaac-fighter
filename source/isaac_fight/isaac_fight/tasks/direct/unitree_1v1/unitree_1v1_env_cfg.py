@@ -136,6 +136,8 @@ class RewardScalesCfg:
     opponent_fall: float = 18.00
     opponent_destabilization: float = 5.00
     opponent_knockdown: float = 30.00
+    impact_balance: float = 4.00
+    impact_self_destabilization: float = 8.00
     mutual_fall: float = 26.00
     stay_inside: float = 0.01
     energy: float = 0.015

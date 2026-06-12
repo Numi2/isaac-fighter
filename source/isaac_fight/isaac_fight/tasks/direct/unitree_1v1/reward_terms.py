@@ -49,12 +49,19 @@ class CombatRewardComputer:
         drive_pressure = env._drive_pressure[agent] * upright
         support_break_pressure = env._support_break_pressure[agent] * upright
         opp_destabilization = env._proof_destabilization[agent]
+        proof_impact = torch.clamp(env._proof_impact[agent], 0.0, 5.0)
         proof = (env._proof_impact[agent] > 0.0).float()
         self_fall = env._fallen[agent].float()
         clean_attack = proof * upright * (1.0 - self_fall)
         opponent_fall = clean_attack * (env._new_fall[opponent].float() + 0.08 * env._fallen[opponent].float())
         opponent_knockdown = clean_attack * (env._new_knockdown[opponent].float() + 0.15 * env._knockdown[opponent].float())
         mutual_fall = self_fall * env._fallen[opponent].float()
+        impact_balance = proof_impact * balance_recovery * (1.0 - self_fall)
+        impact_self_destabilization = proof_impact * (
+            (1.0 - upright)
+            + 0.50 * torch.clamp(lateral_ang_vel / 4.0, 0.0, 2.0)
+            + self_fall
+        )
 
         energy = env._energy[agent]
         torque_penalty = env._torque_penalty[agent]
@@ -81,6 +88,8 @@ class CombatRewardComputer:
             "opponent_fall": scales.opponent_fall * opponent_fall,
             "opponent_destabilization": scales.opponent_destabilization * opp_destabilization,
             "opponent_knockdown": scales.opponent_knockdown * opponent_knockdown,
+            "impact_balance": scales.impact_balance * impact_balance,
+            "impact_self_destabilization": -scales.impact_self_destabilization * impact_self_destabilization,
             "mutual_fall": -scales.mutual_fall * mutual_fall,
             "stay_inside": scales.stay_inside * stay_inside,
             "energy_efficiency": -scales.energy * energy,
