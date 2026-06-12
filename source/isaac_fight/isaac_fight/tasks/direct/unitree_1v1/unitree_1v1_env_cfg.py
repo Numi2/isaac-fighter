@@ -18,7 +18,7 @@ from .fighter_ids import FIGHTER_A, FIGHTER_B
 from .observations import observation_dim
 
 
-def action_dim_for_fighter(fighter: "FighterCfg") -> int:
+def action_dim_for_fighter(fighter: FighterCfg) -> int:
     if fighter.controlled_joint_names:
         return len(fighter.controlled_joint_names)
     return get_unitree_robot_spec(fighter.robot_name).action_dim
@@ -95,6 +95,7 @@ class ObservationCfg:
     opponent_keypoint_body_patterns: tuple[str, ...] = (
         ".*pelvis.*|.*base.*",
         ".*torso.*|.*waist.*",
+        ".*head.*|.*neck.*",
         ".*left.*wrist.*|.*left.*hand.*|.*left.*elbow.*",
         ".*right.*wrist.*|.*right.*hand.*|.*right.*elbow.*",
         ".*left.*foot.*|.*left.*ankle.*",
