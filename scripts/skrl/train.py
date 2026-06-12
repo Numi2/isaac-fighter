@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import sys
 
 from isaaclab.app import AppLauncher
@@ -25,7 +27,7 @@ parser.add_argument("--max_iterations", type=int, default=None)
 parser.add_argument("--ml_framework", type=str, default="torch", choices=["torch", "jax", "jax-numpy"])
 parser.add_argument("--self_play", action="store_true", default=True, help="Track policy versions in a self-play pool.")
 parser.add_argument("--no_self_play", action="store_false", dest="self_play")
-parser.add_argument("--historical_opponent", action="store_true", default=False, help="Freeze opponent actions from sampled TorchScript pool policies.")
+parser.add_argument("--historical_opponent", action="store_true", default=False, help="Freeze opponent actions from sampled skrl/TorchScript pool policies.")
 parser.add_argument("--active_agent", type=str, default="fighter_a", choices=["fighter_a", "fighter_b"])
 parser.add_argument("--pool_dir", type=str, default="policy_pool")
 parser.add_argument("--snapshot_interval", type=int, default=50)
@@ -148,10 +150,46 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     if args_cli.self_play:
         checkpoint_dir = checkpoint_dir_from_log_dir(log_dir)
+        pool_metadata = {
+            "framework": args_cli.ml_framework,
+            "algorithm": algorithm.upper(),
+            "task": args_cli.task,
+            "seed": args_cli.seed,
+            "reward_version": "combat_proof_v2",
+            "config_hash": hashlib.sha256(
+                json.dumps(
+                    {
+                        "fighter_a": env_cfg.fighter_a.robot_name,
+                        "fighter_b": env_cfg.fighter_b.robot_name,
+                        "action_spaces": env_cfg.action_spaces,
+                        "observation_spaces": env_cfg.observation_spaces,
+                        "rewards": vars(env_cfg.rewards),
+                        "contact": vars(env_cfg.contact),
+                    },
+                    sort_keys=True,
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()[:16],
+            "agents": {
+                "fighter_a": {
+                    "side": "fighter_a",
+                    "robot": env_cfg.fighter_a.robot_name,
+                    "action_dim": env_cfg.action_spaces["fighter_a"],
+                    "obs_dim": env_cfg.observation_spaces["fighter_a"],
+                },
+                "fighter_b": {
+                    "side": "fighter_b",
+                    "robot": env_cfg.fighter_b.robot_name,
+                    "action_dim": env_cfg.action_spaces["fighter_b"],
+                    "obs_dim": env_cfg.observation_spaces["fighter_b"],
+                },
+            },
+        }
         supervisor = SelfPlayTrainingSupervisor(
             pool_dir=args_cli.pool_dir,
             checkpoint_dir=checkpoint_dir,
             snapshot_interval=args_cli.snapshot_interval,
+            metadata=pool_metadata,
         )
         added = supervisor.sync_checkpoints()
         print(f"[INFO] Self-play pool synchronized. Added {added} checkpoint(s) to {Path(args_cli.pool_dir).resolve()}")

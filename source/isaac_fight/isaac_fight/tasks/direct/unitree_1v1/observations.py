@@ -64,7 +64,7 @@ class CombatObservationBuilder:
                 env._knockdown_clock[opponent] / max(env.cfg.rules.knockout_grace_s, 1.0e-6),
                 env._out_of_bounds[agent].float(),
                 env._out_of_bounds[opponent].float(),
-                torch.clamp(env._contact_force[agent] / env.cfg.contact.force_normalizer, 0.0, 5.0),
+                torch.clamp((env._eval_contact_force[agent] + env._proxy_engagement[agent]) / env.cfg.contact.force_normalizer, 0.0, 5.0),
                 torch.clamp(env._useful_contact[agent], 0.0, 5.0),
                 torch.clamp(env._energy_ema[agent] / env.cfg.rewards.energy_normalizer, 0.0, 5.0),
                 torch.clamp(env._opponent_destabilization[agent], 0.0, 5.0),

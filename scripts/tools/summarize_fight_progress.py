@@ -32,9 +32,16 @@ DEFAULT_TAGS = (
     "Episode / Total timesteps (mean)",
     "Info / Combat/mean_useful_contact",
     "Info / Combat/mean_contact_intent",
-    "Info / Combat/mean_contact_force",
+    "Info / Combat/mean_real_opponent_contact_force",
+    "Info / Combat/mean_ground_contact_force",
+    "Info / Combat/mean_proxy_engagement",
+    "Info / Combat/mean_eval_contact_force",
     "Info / Combat/mean_opponent_destabilization",
+    "Info / Combat/mean_proof_contact",
+    "Info / Combat/mean_proof_impact",
+    "Info / Combat/mean_proof_destabilization",
     "Info / Combat/mean_opponent_knockdown_events",
+    "Info / Combat/mean_proof_opponent_knockdown_events",
     "Info / Combat/mean_self_knockdown_events",
     "Info / Combat/mean_inactivity",
     "Info / Combat/mean_spin_without_contact",
@@ -92,7 +99,13 @@ def _summarize_tournament(path: Path) -> dict[str, Any]:
         "wins_b": wins_b,
         "draws": draws,
         "mean_duration_s": sum(float(m.get("duration_s", 0.0)) for m in matches) / len(matches),
-        "mean_contact_force": sum(float(m.get("contact_force_a", 0.0)) + float(m.get("contact_force_b", 0.0)) for m in matches)
+        "mean_eval_contact_force": sum(
+            float(m.get("eval_contact_force_fighter_a", m.get("sensor_contact_force_fighter_a", m.get("sensor_contact_force_a", 0.0))))
+            + float(m.get("eval_contact_force_fighter_b", m.get("sensor_contact_force_fighter_b", m.get("sensor_contact_force_b", 0.0))))
+            for m in matches
+        )
+        / (2.0 * len(matches)),
+        "mean_proof_impact": sum(float(m.get("proof_impact_fighter_a", 0.0)) + float(m.get("proof_impact_fighter_b", 0.0)) for m in matches)
         / (2.0 * len(matches)),
     }
 
@@ -110,16 +123,19 @@ def _summarize_replay(path: Path) -> dict[str, Any]:
     if not steps:
         return {"steps": 0}
     contact_samples = []
+    proof_samples = []
     knockdowns = 0
     for step in steps:
         for agent in ("fighter_a", "fighter_b"):
             fighter = step.get(agent, {})
-            contact_samples.append(float(fighter.get("contact_force", 0.0)))
+            contact_samples.append(float(fighter.get("eval_contact_force", fighter.get("sensor_contact_force", fighter.get("contact_force", 0.0)))))
+            proof_samples.append(float(fighter.get("proof_impact", 0.0)))
             knockdowns += int(bool(fighter.get("knockdown", False)))
     return {
         "steps": len(steps),
         "last_time_s": float(steps[-1].get("time_s", 0.0)),
-        "mean_contact_force": sum(contact_samples) / max(len(contact_samples), 1),
+        "mean_eval_contact_force": sum(contact_samples) / max(len(contact_samples), 1),
+        "mean_proof_impact": sum(proof_samples) / max(len(proof_samples), 1),
         "knockdown_frames": knockdowns,
         "final_winner": int(steps[-1].get("winner", 0)),
     }

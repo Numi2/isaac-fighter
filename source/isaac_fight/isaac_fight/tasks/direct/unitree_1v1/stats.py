@@ -25,7 +25,8 @@ class MatchSummary:
     fighter_b_self_falls: int = 0
     fighter_a_oob_losses: int = 0
     fighter_b_oob_losses: int = 0
-    avg_contact_force: float = 0.0
+    avg_eval_contact_force: float = 0.0
+    avg_proof_impact: float = 0.0
     avg_energy_use: float = 0.0
     extras: dict[str, Any] = field(default_factory=dict)
 
@@ -50,7 +51,8 @@ class TournamentAccumulator:
             "fighter_b_win_rate": wins_b / n,
             "draw_rate": draws / n,
             "average_duration_s": sum(m.duration_s for m in self.matches) / n,
-            "average_contact_force": sum(m.avg_contact_force for m in self.matches) / n,
+            "average_eval_contact_force": sum(m.avg_eval_contact_force for m in self.matches) / n,
+            "average_proof_impact": sum(m.avg_proof_impact for m in self.matches) / n,
             "average_energy_use": sum(m.avg_energy_use for m in self.matches) / n,
             "fighter_a_knockdowns": sum(m.fighter_a_knockdowns for m in self.matches),
             "fighter_b_knockdowns": sum(m.fighter_b_knockdowns for m in self.matches),

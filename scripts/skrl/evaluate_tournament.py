@@ -37,7 +37,7 @@ import isaac_fight.tasks  # noqa: F401
 from isaac_fight.tasks.direct.unitree_1v1.elo import EloTable
 from isaac_fight.tasks.direct.unitree_1v1.fighter_ids import FIGHTER_A, FIGHTER_B
 from isaac_fight.tasks.direct.unitree_1v1.opponent_pool import OpponentPool
-from isaac_fight.tasks.direct.unitree_1v1.self_play import TorchScriptPolicyBackend
+from isaac_fight.tasks.direct.unitree_1v1.self_play import SkrlCheckpointPolicyBackend, TorchScriptPolicyBackend
 
 
 @hydra_task_config(args_cli.task, "skrl_ippo_cfg_entry_point")
@@ -45,57 +45,77 @@ def main(env_cfg, agent_cfg):  # noqa: ANN001, ARG001
     env_cfg.scene.num_envs = args_cli.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
     pool = OpponentPool(args_cli.pool_dir)
-    policies = [p for p in pool.policies if "torchscript" in p.tags and Path(p.checkpoint_path).exists()]
+    policies = [p for p in pool.policies if ({"torchscript", "skrl"} & set(p.tags)) and Path(p.checkpoint_path).exists()]
     policies = policies[-args_cli.max_policies :]
     if len(policies) < 2:
-        raise RuntimeError("Tournament needs at least two TorchScript policies in the pool.")
+        raise RuntimeError("Tournament needs at least two skrl or TorchScript policies in the pool.")
 
     env = gym.make(args_cli.task, cfg=env_cfg)
     elo = EloTable()
     results = []
     device = args_cli.device or "cuda:0"
+    for policy in policies:
+        elo.ensure(policy.policy_id).rating = policy.elo
 
-    backends = {p.policy_id: TorchScriptPolicyBackend(p.checkpoint_path, device=device) for p in policies}
+    def backend(policy, agent_id: str):  # noqa: ANN001
+        if "torchscript" in policy.tags:
+            return TorchScriptPolicyBackend(policy.checkpoint_path, device=device)
+        return SkrlCheckpointPolicyBackend(policy.checkpoint_path, agent_id=agent_id, device=device)
+
+    backends = {(p.policy_id, agent_id): backend(p, agent_id) for p in policies for agent_id in (FIGHTER_A, FIGHTER_B)}
     for a, b in itertools.combinations(policies, 2):
         for round_idx in range(args_cli.rounds):
-            obs, _ = env.reset()
-            done = torch.zeros(args_cli.num_envs, dtype=torch.bool, device=env.unwrapped.device)
-            total_reward = {FIGHTER_A: 0.0, FIGHTER_B: 0.0}
-            while not bool(done.all().item()):
-                actions = {
-                    FIGHTER_A: backends[a.policy_id].act(obs[FIGHTER_A]),
-                    FIGHTER_B: backends[b.policy_id].act(obs[FIGHTER_B]),
-                }
-                obs, rewards, terminated, truncated, extras = env.step(actions)
-                done = terminated[FIGHTER_A] | truncated[FIGHTER_A]
-                total_reward[FIGHTER_A] += float(rewards[FIGHTER_A].mean().item())
-                total_reward[FIGHTER_B] += float(rewards[FIGHTER_B].mean().item())
-            winner = int(env.unwrapped._winner[0].item())
-            if winner == 1:
-                result_a = 1.0
-            elif winner == 2:
-                result_a = 0.0
-            else:
-                result_a = 0.5
-            ra, rb = elo.update(a.policy_id, b.policy_id, result_a)
-            results.append(
-                {
-                    "round": round_idx,
-                    "policy_a": a.policy_id,
-                    "policy_b": b.policy_id,
-                    "winner": winner,
-                    "draw": winner == 0,
-                    "rating_a": ra,
-                    "rating_b": rb,
-                    "reward_a": total_reward[FIGHTER_A],
-                    "reward_b": total_reward[FIGHTER_B],
-                    "duration_s": float(env.unwrapped.episode_length_buf[0].item() * env.unwrapped.step_dt),
-                    "contact_force_a": float(env.unwrapped._contact_force[FIGHTER_A][0].item()),
-                    "contact_force_b": float(env.unwrapped._contact_force[FIGHTER_B][0].item()),
-                    "energy_a": float(env.unwrapped._energy_ema[FIGHTER_A][0].item()),
-                    "energy_b": float(env.unwrapped._energy_ema[FIGHTER_B][0].item()),
-                }
-            )
+            for policy_on_a, policy_on_b in ((a, b), (b, a)):
+                obs, _ = env.reset()
+                done = torch.zeros(args_cli.num_envs, dtype=torch.bool, device=env.unwrapped.device)
+                total_reward = {FIGHTER_A: 0.0, FIGHTER_B: 0.0}
+                while not bool(done.all().item()):
+                    actions = {
+                        FIGHTER_A: backends[(policy_on_a.policy_id, FIGHTER_A)].act(obs[FIGHTER_A]),
+                        FIGHTER_B: backends[(policy_on_b.policy_id, FIGHTER_B)].act(obs[FIGHTER_B]),
+                    }
+                    obs, rewards, terminated, truncated, extras = env.step(actions)
+                    done = terminated[FIGHTER_A] | truncated[FIGHTER_A]
+                    total_reward[FIGHTER_A] += float(rewards[FIGHTER_A].mean().item())
+                    total_reward[FIGHTER_B] += float(rewards[FIGHTER_B].mean().item())
+                winner = int(env.unwrapped._winner[0].item())
+                if winner == 1:
+                    result_policy_on_a = 1.0
+                elif winner == 2:
+                    result_policy_on_a = 0.0
+                else:
+                    result_policy_on_a = 0.5
+                ra, rb = elo.update(policy_on_a.policy_id, policy_on_b.policy_id, result_policy_on_a)
+                pool.update_result(policy_on_a.policy_id, result_policy_on_a, elo=ra)
+                pool.update_result(policy_on_b.policy_id, 1.0 - result_policy_on_a, elo=rb)
+                results.append(
+                    {
+                        "round": round_idx,
+                        "policy_fighter_a": policy_on_a.policy_id,
+                        "policy_fighter_b": policy_on_b.policy_id,
+                        "fighter_a_robot": env_cfg.fighter_a.robot_name,
+                        "fighter_b_robot": env_cfg.fighter_b.robot_name,
+                        "winner": winner,
+                        "draw": winner == 0,
+                        "rating_policy_fighter_a": ra,
+                        "rating_policy_fighter_b": rb,
+                        "reward_fighter_a": total_reward[FIGHTER_A],
+                        "reward_fighter_b": total_reward[FIGHTER_B],
+                        "duration_s": float(env.unwrapped.episode_length_buf[0].item() * env.unwrapped.step_dt),
+                        "real_opponent_contact_force_fighter_a": float(env.unwrapped._real_opponent_contact_force[FIGHTER_A][0].item()),
+                        "real_opponent_contact_force_fighter_b": float(env.unwrapped._real_opponent_contact_force[FIGHTER_B][0].item()),
+                        "ground_contact_force_fighter_a": float(env.unwrapped._ground_contact_force[FIGHTER_A][0].item()),
+                        "ground_contact_force_fighter_b": float(env.unwrapped._ground_contact_force[FIGHTER_B][0].item()),
+                        "proxy_engagement_fighter_a": float(env.unwrapped._proxy_engagement[FIGHTER_A][0].item()),
+                        "proxy_engagement_fighter_b": float(env.unwrapped._proxy_engagement[FIGHTER_B][0].item()),
+                        "eval_contact_force_fighter_a": float(env.unwrapped._eval_contact_force[FIGHTER_A][0].item()),
+                        "eval_contact_force_fighter_b": float(env.unwrapped._eval_contact_force[FIGHTER_B][0].item()),
+                        "proof_impact_fighter_a": float(env.unwrapped._proof_impact[FIGHTER_A][0].item()),
+                        "proof_impact_fighter_b": float(env.unwrapped._proof_impact[FIGHTER_B][0].item()),
+                        "energy_fighter_a": float(env.unwrapped._energy_ema[FIGHTER_A][0].item()),
+                        "energy_fighter_b": float(env.unwrapped._energy_ema[FIGHTER_B][0].item()),
+                    }
+                )
     payload = {"schema": "isaac_fight.tournament.v1", "elo": elo.to_dict(), "matches": results}
     output = Path(args_cli.output)
     output.parent.mkdir(parents=True, exist_ok=True)

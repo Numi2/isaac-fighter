@@ -26,6 +26,7 @@ class PolicyVersion:
     draws: int = 0
     created_at: float = field(default_factory=time.time)
     tags: tuple[str, ...] = ()
+    metadata: dict = field(default_factory=dict)
 
     @property
     def win_rate(self) -> float:
@@ -107,6 +108,7 @@ class OpponentPool:
         policy_id: str | None = None,
         elo: float = 1000.0,
         tags: Iterable[str] = (),
+        metadata: dict | None = None,
     ) -> PolicyVersion:
         checkpoint = Path(checkpoint_path)
         if version is None:
@@ -119,6 +121,7 @@ class OpponentPool:
             version=version,
             elo=elo,
             tags=tuple(tags),
+            metadata=metadata or {},
         )
         self._policies[record.policy_id] = record
         self.save()

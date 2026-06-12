@@ -18,6 +18,7 @@ from typing import Protocol
 
 import gymnasium as gym
 import torch
+from torch import nn
 
 from .fighter_ids import FIGHTER_A, FIGHTER_B, opponent_of
 from .opponent_pool import OpponentPool, OpponentSample
@@ -47,6 +48,45 @@ class TorchScriptPolicyBackend:
         return torch.clamp(out.to(observations.device), -1.0, 1.0)
 
 
+class SkrlCheckpointPolicyBackend:
+    """Deterministic inference backend for skrl IPPO/MAPPO checkpoints.
+
+    A skrl multi-agent checkpoint stores one policy state dict per fighter. This backend loads the selected fighter side
+    and emits the Gaussian mean network output directly, which is the stable frozen-opponent action.
+    """
+
+    def __init__(self, path: str | Path, agent_id: str, device: str = "cuda:0"):
+        self.path = Path(path)
+        self.agent_id = agent_id
+        self.device = torch.device(device if torch.cuda.is_available() and "cuda" in str(device) else "cpu")
+        checkpoint = torch.load(self.path, map_location=self.device)
+        state_dict = checkpoint[agent_id]["policy"] if agent_id in checkpoint else checkpoint["policy"]
+        self.module = self._build_policy(state_dict).to(self.device)
+        self.module.load_state_dict(
+            {key.removeprefix("net_container."): value for key, value in state_dict.items() if key.startswith("net_container.")}
+        )
+        self.module.eval()
+
+    @staticmethod
+    def _build_policy(state_dict: dict[str, torch.Tensor]) -> nn.Sequential:
+        layers: list[nn.Module] = []
+        linear_indices = sorted(
+            int(key.split(".")[1])
+            for key in state_dict
+            if key.startswith("net_container.") and key.endswith(".weight")
+        )
+        for idx, layer_idx in enumerate(linear_indices):
+            weight = state_dict[f"net_container.{layer_idx}.weight"]
+            layers.append(nn.Linear(weight.shape[1], weight.shape[0]))
+            if idx != len(linear_indices) - 1:
+                layers.append(nn.ELU())
+        return nn.Sequential(*layers)
+
+    @torch.no_grad()
+    def act(self, observations: torch.Tensor) -> torch.Tensor:
+        return torch.clamp(self.module(observations.to(self.device)).to(observations.device), -1.0, 1.0)
+
+
 @dataclass
 class SelfPlayTrainingSupervisor:
     """Synchronizes skrl checkpoint folders with the persistent opponent pool."""
@@ -55,6 +95,7 @@ class SelfPlayTrainingSupervisor:
     checkpoint_dir: str | Path
     snapshot_interval: int = 50
     active_elo: float = 1000.0
+    metadata: dict | None = None
 
     def __post_init__(self):
         self.pool = OpponentPool(self.pool_dir)
@@ -79,7 +120,7 @@ class SelfPlayTrainingSupervisor:
             if resolved != pooled_path.resolve():
                 shutil.copy2(candidate, pooled_path)
             tags = ("torchscript",) if _looks_like_torchscript(candidate) else ("skrl",)
-            self.pool.add_checkpoint(pooled_path, version=version, elo=self.active_elo, tags=tags)
+            self.pool.add_checkpoint(pooled_path, version=version, elo=self.active_elo, tags=tags, metadata=self.metadata or {})
             known_paths.add(pooled_path.resolve())
             added += 1
         return added
@@ -102,6 +143,7 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         pool: OpponentPool,
         active_agent: str = FIGHTER_A,
         device: str = "cuda:0",
+        active_elo: float = 1000.0,
         elo_window: float = 250.0,
         weakness_bias: float = 0.65,
         latest_bias: float = 0.15,
@@ -111,6 +153,7 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         self.active_agent = active_agent
         self.opponent_agent = opponent_of(active_agent)
         self.device = device
+        self.active_elo = active_elo
         self.elo_window = elo_window
         self.weakness_bias = weakness_bias
         self.latest_bias = latest_bias
@@ -147,7 +190,7 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
 
     def _sample_backend(self) -> None:
         sample = self.pool.sample(
-            active_elo=1000.0,
+            active_elo=self.active_elo,
             elo_window=self.elo_window,
             weakness_bias=self.weakness_bias,
             latest_bias=self.latest_bias,
@@ -156,11 +199,13 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         self._backend = None
         if sample is None:
             return
-        if "torchscript" not in sample.policy.tags:
-            return
         path = Path(sample.policy.checkpoint_path)
-        if path.exists():
+        if not path.exists():
+            return
+        if "torchscript" in sample.policy.tags:
             self._backend = TorchScriptPolicyBackend(path, device=self.device)
+        elif "skrl" in sample.policy.tags:
+            self._backend = SkrlCheckpointPolicyBackend(path, agent_id=self.opponent_agent, device=self.device)
 
 
 def _version_from_path(path: Path) -> int:
@@ -191,6 +236,7 @@ def maybe_wrap_historical_opponent(env: gym.Env, cfg, log_dir: str | Path | None
         pool=pool,
         active_agent=getattr(args, "active_agent", cfg.self_play.active_agent),
         device=getattr(args, "device", "cuda:0") or "cuda:0",
+        active_elo=getattr(cfg.self_play, "active_elo", 1000.0),
         elo_window=cfg.self_play.elo_window,
         weakness_bias=cfg.self_play.weakness_bias,
         latest_bias=cfg.self_play.latest_bias,

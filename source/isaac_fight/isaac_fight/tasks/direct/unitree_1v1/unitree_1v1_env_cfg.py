@@ -99,7 +99,7 @@ class RewardScalesCfg:
     upright_stability: float = 0.12
     balance_recovery: float = 0.08
     controlled_approach: float = 1.60
-    contact_intent: float = 1.25
+    contact_intent: float = 1.75
     arena_control: float = 0.02
     useful_contact: float = 4.00
     opponent_destabilization: float = 3.00

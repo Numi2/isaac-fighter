@@ -44,7 +44,7 @@ class CombatRewardComputer:
         stay_inside = torch.clamp((env.cfg.arena.radius - radial) / env.cfg.arena.radius, -1.0, 1.0)
 
         useful_contact = env._useful_contact[agent] * upright
-        opp_destabilization = env._opponent_destabilization[agent]
+        opp_destabilization = env._proof_destabilization[agent]
         opponent_knockdown = env._new_knockdown[opponent].float() + 0.15 * env._knockdown[opponent].float()
 
         energy = env._energy[agent]
