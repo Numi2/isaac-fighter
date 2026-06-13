@@ -117,6 +117,7 @@ class SelfPlayTrainingSupervisor:
     active_elo: float = 1000.0
     metadata: dict | None = None
     promotion_min_proof_impact: float = 0.0
+    promotion_min_health_score: float = -1.0e9
     promotion_bootstrap_count: int = 1
 
     def __post_init__(self):
@@ -136,7 +137,7 @@ class SelfPlayTrainingSupervisor:
             for p in self.pool.policies
             if isinstance(p.metadata, dict) and p.metadata.get("source_checkpoint_path")
         }
-        promotion_metric = self._latest_proof_impact()
+        health_snapshot = self._latest_health_snapshot()
         candidates = sorted(self.checkpoint_dir.rglob("*.pt"), key=lambda p: (p.stat().st_mtime, str(p)))
         added = 0
         for candidate in candidates:
@@ -153,7 +154,7 @@ class SelfPlayTrainingSupervisor:
             pooled_path = Path(self.pool.root) / "checkpoints" / pooled_name
             if resolved in known_pooled_paths or (pooled_path.exists() and pooled_path.resolve() in known_pooled_paths):
                 continue
-            if not self._passes_promotion_gate(promotion_metric):
+            if not self._passes_promotion_gate(health_snapshot):
                 continue
             source_stat = candidate.stat()
             pooled_path.parent.mkdir(parents=True, exist_ok=True)
@@ -169,7 +170,9 @@ class SelfPlayTrainingSupervisor:
             metadata["source_checkpoint_path"] = str(resolved)
             metadata["source_checkpoint_mtime_ns"] = int(source_stat.st_mtime_ns)
             metadata["source_checkpoint_size"] = int(source_stat.st_size)
-            metadata["promotion_proof_impact"] = promotion_metric
+            metadata["promotion_health"] = health_snapshot
+            metadata["promotion_proof_impact"] = health_snapshot.get("proof_impact")
+            metadata["promotion_health_score"] = health_snapshot.get("health_score")
             self.pool.add_checkpoint(
                 pooled_path, version=version, policy_id=policy_id, elo=self.active_elo, tags=tags, metadata=metadata
             )
@@ -181,15 +184,36 @@ class SelfPlayTrainingSupervisor:
     def sample(self, active_elo: float | None = None) -> OpponentSample | None:
         return self.pool.sample(active_elo=active_elo if active_elo is not None else self.active_elo)
 
-    def _passes_promotion_gate(self, proof_impact: float | None) -> bool:
-        threshold = max(0.0, float(self.promotion_min_proof_impact))
-        if threshold <= 0.0:
+    def _passes_promotion_gate(self, health_snapshot: dict[str, float | None]) -> bool:
+        proof_threshold = max(0.0, float(self.promotion_min_proof_impact))
+        health_threshold = float(self.promotion_min_health_score)
+        if proof_threshold <= 0.0 and health_threshold <= -1.0e8:
             return True
         if len(self.pool) < max(0, int(self.promotion_bootstrap_count)):
             return True
-        return proof_impact is not None and proof_impact >= threshold
+        proof_impact = health_snapshot.get("proof_impact")
+        if proof_threshold > 0.0 and (proof_impact is None or proof_impact < proof_threshold):
+            return False
+        health_score = health_snapshot.get("health_score")
+        if health_threshold > -1.0e8 and (health_score is None or health_score < health_threshold):
+            return False
+        return True
 
     def _latest_proof_impact(self) -> float | None:
+        return self._latest_scalar("Info / Combat/mean_proof_impact")
+
+    def _latest_health_snapshot(self) -> dict[str, float | None]:
+        return {
+            "proof_impact": self._latest_proof_impact(),
+            "health_score": self._latest_scalar("Info / Combat/mean_health_score_per_step"),
+            "upright_seconds": self._latest_scalar("Info / Combat/mean_health_upright_seconds_per_step"),
+            "feet_ground_support": self._latest_scalar("Info / Combat/mean_health_feet_ground_support_per_step"),
+            "caused_knockdowns": self._latest_scalar("Info / Combat/mean_health_caused_knockdowns_per_step"),
+            "mutual_falls": self._latest_scalar("Info / Combat/mean_health_mutual_falls_per_step"),
+            "torso_first_contacts": self._latest_scalar("Info / Combat/mean_health_torso_first_contacts_per_step"),
+        }
+
+    def _latest_scalar(self, tag: str) -> float | None:
         try:
             from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
         except Exception:
@@ -200,7 +224,7 @@ class SelfPlayTrainingSupervisor:
         try:
             accumulator = EventAccumulator(str(log_dir))
             accumulator.Reload()
-            values = accumulator.Scalars("Info / Combat/mean_proof_impact")
+            values = accumulator.Scalars(tag)
         except Exception:
             return None
         if not values:
@@ -460,6 +484,16 @@ class ResidualLocomotionActionWrapper(gym.Wrapper):
         device: str = "cuda:0",
         base_action_scale: float = 1.0,
         residual_action_scale: float = 0.35,
+        residual_leg_action_scale: float = 0.035,
+        residual_waist_action_scale: float = 0.020,
+        residual_arm_action_scale: float = 0.180,
+        residual_other_action_scale: float = 0.040,
+        residual_late_leg_action_scale: float = 0.060,
+        residual_late_waist_action_scale: float = 0.030,
+        residual_late_arm_action_scale: float = 0.220,
+        residual_late_other_action_scale: float = 0.060,
+        residual_scale_ramp_start_step: int = 80_000,
+        residual_scale_ramp_end_step: int = 160_000,
         active_after_warmup: bool = True,
     ):
         super().__init__(env)
@@ -467,9 +501,25 @@ class ResidualLocomotionActionWrapper(gym.Wrapper):
         self.device = device
         self.base_action_scale = float(base_action_scale)
         self.residual_action_scale = float(residual_action_scale)
+        self.residual_early_scales = {
+            "leg": float(residual_leg_action_scale),
+            "waist": float(residual_waist_action_scale),
+            "arm": float(residual_arm_action_scale),
+            "other": float(residual_other_action_scale),
+        }
+        self.residual_late_scales = {
+            "leg": float(residual_late_leg_action_scale),
+            "waist": float(residual_late_waist_action_scale),
+            "arm": float(residual_late_arm_action_scale),
+            "other": float(residual_late_other_action_scale),
+        }
+        self.residual_scale_ramp_start_step = int(residual_scale_ramp_start_step)
+        self.residual_scale_ramp_end_step = int(residual_scale_ramp_end_step)
         self.active_after_warmup = bool(active_after_warmup)
         self._last_obs: dict[str, torch.Tensor] | None = None
         self._backends: dict[str, PolicyBackend] = {}
+        self._early_scale_tensors: dict[str, torch.Tensor] = {}
+        self._late_scale_tensors: dict[str, torch.Tensor] = {}
         self._load_backends()
 
     def reset(self, **kwargs):  # noqa: ANN003
@@ -485,7 +535,7 @@ class ResidualLocomotionActionWrapper(gym.Wrapper):
                 if agent not in actions or agent not in self._last_obs:
                     continue
                 base_action = backend.act(self._last_obs[agent]) * self.base_action_scale
-                residual_action = actions[agent] * self.residual_action_scale
+                residual_action = actions[agent] * self._residual_scale_tensor(agent, actions[agent])
                 if warmup_gate is not None:
                     residual_action = residual_action * warmup_gate.unsqueeze(-1)
                 actions[agent] = torch.clamp(base_action + residual_action, -1.0, 1.0)
@@ -501,6 +551,7 @@ class ResidualLocomotionActionWrapper(gym.Wrapper):
                             "enabled": bool(self._backends),
                             "base_action_scale": self.base_action_scale,
                             "residual_action_scale": self.residual_action_scale,
+                            "residual_joint_scale_mean": self._residual_scale_mean(),
                             "checkpoint_path": str(self.path),
                         }
                     )
@@ -539,6 +590,62 @@ class ResidualLocomotionActionWrapper(gym.Wrapper):
         if callable(gate_fn):
             return gate_fn()
         return None
+
+    def _residual_scale_tensor(self, agent: str, action: torch.Tensor) -> torch.Tensor:
+        if agent not in self._early_scale_tensors:
+            early, late = self._build_residual_scale_tensors(agent, action)
+            self._early_scale_tensors[agent] = early
+            self._late_scale_tensors[agent] = late
+        early = self._early_scale_tensors[agent].to(device=action.device, dtype=action.dtype)
+        late = self._late_scale_tensors[agent].to(device=action.device, dtype=action.dtype)
+        alpha = self._residual_ramp_alpha()
+        return early + alpha * (late - early)
+
+    def _build_residual_scale_tensors(self, agent: str, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        base_env = self.env.unwrapped
+        runtime = getattr(base_env, "_runtime", {}).get(agent) if hasattr(base_env, "_runtime") else None
+        joint_names = list(getattr(runtime, "joint_names", ())) if runtime is not None else []
+        action_dim = int(action.shape[-1])
+        if len(joint_names) != action_dim:
+            joint_names = ["" for _ in range(action_dim)]
+        early = [self._scale_for_joint(name, self.residual_early_scales) for name in joint_names]
+        late = [self._scale_for_joint(name, self.residual_late_scales) for name in joint_names]
+        return (
+            torch.as_tensor(early, device=action.device, dtype=action.dtype).unsqueeze(0),
+            torch.as_tensor(late, device=action.device, dtype=action.dtype).unsqueeze(0),
+        )
+
+    def _scale_for_joint(self, joint_name: str, scales: dict[str, float]) -> float:
+        category = self._joint_category(joint_name)
+        return min(max(0.0, self.residual_action_scale), max(0.0, scales.get(category, scales["other"])))
+
+    @staticmethod
+    def _joint_category(joint_name: str) -> str:
+        lower = joint_name.lower()
+        if "waist" in lower or "torso" in lower:
+            return "waist"
+        if any(token in lower for token in ("shoulder", "elbow", "wrist", "hand", "finger")):
+            return "arm"
+        if any(token in lower for token in ("hip", "knee", "ankle", "toe", "foot")):
+            return "leg"
+        return "other"
+
+    def _residual_ramp_alpha(self) -> float:
+        base_env = self.env.unwrapped
+        step = int(getattr(base_env, "common_step_counter", 0))
+        start = self.residual_scale_ramp_start_step
+        end = max(start + 1, self.residual_scale_ramp_end_step)
+        return max(0.0, min(1.0, (step - start) / float(end - start)))
+
+    def _residual_scale_mean(self) -> float:
+        if not self._early_scale_tensors:
+            return 0.0
+        alpha = self._residual_ramp_alpha()
+        means = [
+            float((early + alpha * (self._late_scale_tensors[agent] - early)).mean().item())
+            for agent, early in self._early_scale_tensors.items()
+        ]
+        return sum(means) / max(1, len(means))
 
 
 def _version_from_path(path: Path) -> int:
@@ -606,6 +713,16 @@ def maybe_wrap_residual_locomotion(env: gym.Env, cfg, args) -> gym.Env:  # noqa:
         device=getattr(args, "device", "cuda:0") or "cuda:0",
         base_action_scale=getattr(residual_cfg, "base_action_scale", 1.0),
         residual_action_scale=getattr(residual_cfg, "residual_action_scale", 0.35),
+        residual_leg_action_scale=getattr(residual_cfg, "residual_leg_action_scale", 0.035),
+        residual_waist_action_scale=getattr(residual_cfg, "residual_waist_action_scale", 0.020),
+        residual_arm_action_scale=getattr(residual_cfg, "residual_arm_action_scale", 0.180),
+        residual_other_action_scale=getattr(residual_cfg, "residual_other_action_scale", 0.040),
+        residual_late_leg_action_scale=getattr(residual_cfg, "residual_late_leg_action_scale", 0.060),
+        residual_late_waist_action_scale=getattr(residual_cfg, "residual_late_waist_action_scale", 0.030),
+        residual_late_arm_action_scale=getattr(residual_cfg, "residual_late_arm_action_scale", 0.220),
+        residual_late_other_action_scale=getattr(residual_cfg, "residual_late_other_action_scale", 0.060),
+        residual_scale_ramp_start_step=getattr(residual_cfg, "residual_scale_ramp_start_step", 80_000),
+        residual_scale_ramp_end_step=getattr(residual_cfg, "residual_scale_ramp_end_step", 160_000),
         active_after_warmup=getattr(residual_cfg, "active_after_warmup", True),
     )
 

@@ -75,6 +75,8 @@ class ContactCfg:
 
     force_normalizer: float = 600.0
     strike_speed_normalizer: float = 2.5
+    support_ground_contact_height: float = 0.18
+    support_ground_vertical_force_fraction: float = 0.15
     useful_contact_distance: float = 1.25
     useful_contact_min_closing_speed: float = 0.0
     robot_contact_proxy_gain: float = 0.85
@@ -109,6 +111,16 @@ class ResidualLocomotionCfg:
     checkpoint_path: str = ""
     base_action_scale: float = 1.0
     residual_action_scale: float = 0.35
+    residual_leg_action_scale: float = 0.035
+    residual_waist_action_scale: float = 0.020
+    residual_arm_action_scale: float = 0.180
+    residual_other_action_scale: float = 0.040
+    residual_late_leg_action_scale: float = 0.060
+    residual_late_waist_action_scale: float = 0.030
+    residual_late_arm_action_scale: float = 0.220
+    residual_late_other_action_scale: float = 0.060
+    residual_scale_ramp_start_step: int = 80_000
+    residual_scale_ramp_end_step: int = 160_000
     active_after_warmup: bool = True
 
 
@@ -121,10 +133,15 @@ class MotionPriorCfg:
     kind: str = "unitree_g1_mimic_npz"
     source_task: str = "Unitree-G1-29dof-Mimic"
     reward_scale: float = 0.0
-    stand_pose_weight: float = 0.35
-    gait_weight: float = 0.25
-    brace_weight: float = 0.20
-    push_weight: float = 0.20
+    pose_weight: float = 0.50
+    velocity_weight: float = 0.25
+    root_height_weight: float = 0.15
+    upright_weight: float = 0.10
+    support_weight: float = 0.10
+    pose_sigma: float = 0.45
+    velocity_sigma: float = 5.0
+    root_height_sigma: float = 0.18
+    sample_random_phase: bool = True
 
 
 @configclass
@@ -358,6 +375,7 @@ class SelfPlayCfg:
     pfsp_hard_bias: float = 0.35
     role_exploration: float = 0.05
     promotion_min_proof_impact: float = 1.0e-6
+    promotion_min_health_score: float = -1.0e9
     promotion_bootstrap_count: int = 1
 
 

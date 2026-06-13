@@ -65,6 +65,14 @@ parser.add_argument(
 parser.add_argument("--residual_locomotion_checkpoint", type=str, default=None)
 parser.add_argument("--residual_base_action_scale", type=float, default=1.0)
 parser.add_argument("--residual_action_scale", type=float, default=0.35)
+parser.add_argument("--residual_leg_action_scale", type=float, default=None)
+parser.add_argument("--residual_waist_action_scale", type=float, default=None)
+parser.add_argument("--residual_arm_action_scale", type=float, default=None)
+parser.add_argument("--residual_other_action_scale", type=float, default=None)
+parser.add_argument("--residual_late_leg_action_scale", type=float, default=None)
+parser.add_argument("--residual_late_waist_action_scale", type=float, default=None)
+parser.add_argument("--residual_late_arm_action_scale", type=float, default=None)
+parser.add_argument("--residual_late_other_action_scale", type=float, default=None)
 parser.add_argument("--motion_prior_artifact", type=str, default=None)
 parser.add_argument("--motion_prior_reward_scale", type=float, default=0.0)
 parser.add_argument("--enable_pbt", action="store_true", default=False)
@@ -471,6 +479,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.residual_locomotion.checkpoint_path = args_cli.residual_locomotion_checkpoint
         env_cfg.residual_locomotion.base_action_scale = args_cli.residual_base_action_scale
         env_cfg.residual_locomotion.residual_action_scale = args_cli.residual_action_scale
+        for arg_name in (
+            "residual_leg_action_scale",
+            "residual_waist_action_scale",
+            "residual_arm_action_scale",
+            "residual_other_action_scale",
+            "residual_late_leg_action_scale",
+            "residual_late_waist_action_scale",
+            "residual_late_arm_action_scale",
+            "residual_late_other_action_scale",
+        ):
+            value = getattr(args_cli, arg_name)
+            if value is not None:
+                setattr(env_cfg.residual_locomotion, arg_name, value)
     if args_cli.motion_prior_artifact and hasattr(env_cfg, "motion_prior"):
         env_cfg.motion_prior.enabled = True
         env_cfg.motion_prior.artifact_path = args_cli.motion_prior_artifact
@@ -611,6 +632,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             snapshot_interval=args_cli.snapshot_interval,
             metadata=pool_metadata,
             promotion_min_proof_impact=getattr(env_cfg.self_play, "promotion_min_proof_impact", 0.0),
+            promotion_min_health_score=getattr(env_cfg.self_play, "promotion_min_health_score", -1.0e9),
             promotion_bootstrap_count=getattr(env_cfg.self_play, "promotion_bootstrap_count", 1),
         )
         if args_cli.pool_sync_interval_s > 0.0:

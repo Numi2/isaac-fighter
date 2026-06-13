@@ -108,8 +108,11 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._hip_yaw_roll_action_id_tensors: dict[str, torch.Tensor] = {}
         self._posture_action_id_tensors: dict[str, torch.Tensor] = {}
         self._action_scale_tensors: dict[str, torch.Tensor] = {}
+        self._motion_prior_data: dict[str, Any] | None = None
+        self._motion_prior_frame_count = 0
         self._resolve_controlled_joints()
         self._allocate_buffers()
+        self._load_motion_prior_artifact()
         self._configure_replay()
 
     def _setup_scene(self):
@@ -431,6 +434,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._left_support_air_time = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._right_support_air_time = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._support_step_reward = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._motion_prior_phase = {agent: torch.zeros(n, dtype=torch.long, device=device) for agent in FIGHTERS}
         self._perturb_time = {agent: torch.full((n,), float("inf"), device=device) for agent in FIGHTERS}
         self._perturb_linear_velocity = {agent: torch.zeros(n, 3, device=device) for agent in FIGHTERS}
         self._perturb_angular_velocity = {agent: torch.zeros(n, 3, device=device) for agent in FIGHTERS}
@@ -474,6 +478,143 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             }
         )
         self._replay = MatchReplayRecorder(path, header=header)
+
+    def _load_motion_prior_artifact(self) -> None:
+        cfg = self.cfg.motion_prior
+        self._motion_prior_data = None
+        self._motion_prior_frame_count = 0
+        if not cfg.enabled or not cfg.artifact_path:
+            return
+        path = Path(cfg.artifact_path).expanduser()
+        if not path.exists():
+            print(f"[WARN] Motion prior artifact does not exist: {path}", flush=True)
+            return
+        try:
+            raw = self._read_motion_prior_file(path)
+            joint_pos, joint_pos_relative = self._motion_prior_tensor(
+                raw, ("joint_pos_rel", "dof_pos_rel", "joint_position_rel", "joint_positions_rel")
+            ), True
+            if joint_pos is None:
+                joint_pos = self._motion_prior_tensor(
+                    raw, ("joint_pos", "joint_positions", "dof_pos", "qpos", "target_joint_pos")
+                )
+                joint_pos_relative = False
+            if joint_pos is None:
+                print(f"[WARN] Motion prior artifact has no joint position tensor: {path}", flush=True)
+                return
+            joint_names = self._motion_prior_joint_names(raw)
+            per_agent_joint_pos = {
+                agent: self._adapt_motion_prior_joints(joint_pos, joint_names, agent) for agent in FIGHTERS
+            }
+            frame_count = next(iter(per_agent_joint_pos.values())).shape[0]
+            joint_vel = self._motion_prior_tensor(
+                raw, ("joint_vel", "joint_velocities", "dof_vel", "qvel", "target_joint_vel")
+            )
+            per_agent_joint_vel = None
+            if joint_vel is not None:
+                per_agent_joint_vel = {
+                    agent: self._adapt_motion_prior_joints(joint_vel, joint_names, agent) for agent in FIGHTERS
+                }
+            root_height = self._motion_prior_root_height(raw, frame_count)
+            self._motion_prior_data = {
+                "joint_pos": per_agent_joint_pos,
+                "joint_pos_relative": joint_pos_relative,
+                "joint_vel": per_agent_joint_vel,
+                "root_height": root_height,
+            }
+            self._motion_prior_frame_count = int(frame_count)
+            print(
+                f"[INFO] Loaded motion prior {path} with {self._motion_prior_frame_count} frames "
+                f"for {self.cfg.motion_prior.kind}.",
+                flush=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - missing motion prior must not kill non-mimic runs.
+            print(f"[WARN] Could not load motion prior artifact {path}: {exc}", flush=True)
+            self._motion_prior_data = None
+            self._motion_prior_frame_count = 0
+
+    def _read_motion_prior_file(self, path: Path) -> dict[str, Any]:
+        if path.suffix.lower() == ".npz":
+            import numpy as np
+
+            with np.load(path, allow_pickle=True) as npz:
+                return {key: npz[key] for key in npz.files}
+        raw = torch.load(path, map_location="cpu")
+        if isinstance(raw, dict):
+            return raw
+        raise TypeError(f"unsupported motion prior artifact type: {type(raw)!r}")
+
+    def _motion_prior_tensor(self, raw: dict[str, Any], keys: tuple[str, ...]) -> torch.Tensor | None:
+        value = self._motion_prior_value(raw, keys)
+        if value is None:
+            return None
+        tensor = torch.as_tensor(value, dtype=torch.float32, device=self.device)
+        if tensor.ndim == 3:
+            tensor = tensor.reshape(-1, tensor.shape[-1])
+        if tensor.ndim == 1:
+            tensor = tensor.unsqueeze(-1)
+        if tensor.ndim != 2 or tensor.shape[0] == 0:
+            return None
+        return tensor
+
+    def _motion_prior_root_height(self, raw: dict[str, Any], frame_count: int) -> torch.Tensor | None:
+        height = self._motion_prior_tensor(raw, ("root_height", "base_height", "pelvis_height"))
+        if height is not None:
+            return height[:frame_count, 0]
+        root_pos = self._motion_prior_tensor(raw, ("root_pos", "root_position", "base_pos", "base_position"))
+        if root_pos is None or root_pos.shape[-1] < 3:
+            return None
+        return root_pos[:frame_count, 2]
+
+    def _motion_prior_value(self, raw: dict[str, Any], keys: tuple[str, ...]) -> Any | None:
+        for key in keys:
+            if key in raw:
+                return raw[key]
+        for container_key in ("motion", "motions", "data", "reference", "demo"):
+            nested = raw.get(container_key)
+            if hasattr(nested, "shape") and getattr(nested, "shape", ()) == ():
+                try:
+                    nested = nested.item()
+                except Exception:  # noqa: BLE001 - keep looking if object unwrapping is not supported.
+                    nested = None
+            if isinstance(nested, dict):
+                value = self._motion_prior_value(nested, keys)
+                if value is not None:
+                    return value
+        return None
+
+    def _motion_prior_joint_names(self, raw: dict[str, Any]) -> list[str]:
+        value = self._motion_prior_value(raw, ("joint_names", "dof_names", "controlled_joint_names"))
+        if value is None:
+            return []
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu().tolist()
+        names: list[str] = []
+        for item in value:
+            if isinstance(item, bytes):
+                names.append(item.decode("utf-8"))
+            else:
+                names.append(str(item))
+        return names
+
+    def _adapt_motion_prior_joints(
+        self, tensor: torch.Tensor, joint_names: list[str], agent: str
+    ) -> torch.Tensor:
+        action_dim = self._runtime[agent].action_dim
+        if tensor.shape[-1] == action_dim:
+            return tensor
+        if joint_names:
+            index_by_name = {name: idx for idx, name in enumerate(joint_names)}
+            out = torch.zeros(tensor.shape[0], action_dim, device=self.device, dtype=tensor.dtype)
+            for out_idx, name in enumerate(self._runtime[agent].joint_names):
+                source_idx = index_by_name.get(name)
+                if source_idx is not None and source_idx < tensor.shape[-1]:
+                    out[:, out_idx] = tensor[:, source_idx]
+            return out
+        if tensor.shape[-1] > action_dim:
+            return tensor[:, :action_dim]
+        pad = torch.zeros(tensor.shape[0], action_dim - tensor.shape[-1], device=self.device, dtype=tensor.dtype)
+        return torch.cat((tensor, pad), dim=-1)
 
     def _pre_physics_step(self, actions: dict[str, torch.Tensor]) -> None:
         fighter_cfgs = {FIGHTER_A: self.cfg.fighter_a, FIGHTER_B: self.cfg.fighter_b}
@@ -715,6 +856,25 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         opponent_fall = self._new_fall[opponent].float()
         opponent_knockdown = self._new_knockdown[opponent].float()
         proof_gate = (self._proof_impact[agent] > 0.0).float()
+        self_fall = self._new_fall[agent].float()
+        mutual_fall = self_fall * self._fallen[opponent].float()
+        zeros = torch.zeros(self.num_envs, device=self.device)
+        torso_first_contacts = torch.relu(
+            -reward_terms.get("torso_first_contact", zeros) / max(float(self.cfg.rewards.torso_first_contact), 1.0e-6)
+        )
+        upright_seconds = (~self._fallen[agent]).float() * self.step_dt
+        feet_ground_support = self._support_quality(agent)
+        caused_knockdowns = opponent_knockdown * clean_attack
+        health_score = (
+            2.0 * upright_seconds
+            + 0.50 * feet_ground_support
+            + 6.0 * caused_knockdowns
+            + 3.0 * opponent_fall * clean_attack
+            + 0.25 * self._proof_impact[agent]
+            - 8.0 * self_fall
+            - 10.0 * mutual_fall
+            - 1.50 * torso_first_contacts
+        )
         episode_terms = {
             "total_reward": breakdown.total,
             **reward_terms,
@@ -737,8 +897,15 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             "combat_clean_opponent_fall_events": opponent_fall * clean_attack,
             "combat_opponent_knockdown_events": opponent_knockdown,
             "combat_proof_opponent_knockdown_events": opponent_knockdown * proof_gate,
-            "combat_self_fall_events": self._new_fall[agent].float(),
-            "combat_mutual_fall_events": self._new_fall[agent].float() * self._fallen[opponent].float(),
+            "combat_self_fall_events": self_fall,
+            "combat_self_knockdown_events": self._new_knockdown[agent].float(),
+            "combat_mutual_fall_events": mutual_fall,
+            "combat_health_upright_seconds": upright_seconds,
+            "combat_health_feet_ground_support": feet_ground_support,
+            "combat_health_caused_knockdowns": caused_knockdowns,
+            "combat_health_mutual_falls": mutual_fall,
+            "combat_health_torso_first_contacts": torso_first_contacts,
+            "combat_health_score": health_score,
         }
         return episode_terms
 
@@ -910,6 +1077,16 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._left_support_air_time[agent][env_ids] = 0.0
             self._right_support_air_time[agent][env_ids] = 0.0
             self._support_step_reward[agent][env_ids] = 0.0
+            if self._motion_prior_frame_count > 0 and self.cfg.motion_prior.sample_random_phase:
+                self._motion_prior_phase[agent][env_ids] = torch.randint(
+                    0,
+                    self._motion_prior_frame_count,
+                    (env_ids.numel(),),
+                    device=self.device,
+                    dtype=torch.long,
+                )
+            else:
+                self._motion_prior_phase[agent][env_ids] = 0
             self._randomize_push_hand(env_ids, agent)
             self._sample_perturbation(env_ids, agent)
             for tensor in self._episode_sums[agent].values():
@@ -1464,7 +1641,19 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 continue
             force_matrix = getattr(sensor.data, "force_matrix_w", None)
             if force_matrix is not None:
-                return torch.linalg.norm(force_matrix, dim=-1).amax(dim=(-1, -2))
+                force_norm = torch.linalg.norm(force_matrix, dim=-1)
+                if force_norm.ndim >= 3:
+                    force_norm = force_norm.amax(dim=-1)
+                all_body_force = force_norm.amax(dim=-1)
+                upper_ids = self._upper_contact_body_id_tensors.get(agent)
+                if upper_ids is None or upper_ids.numel() == 0 or force_norm.ndim < 2:
+                    return all_body_force
+                upper_force = force_norm.index_select(1, upper_ids).amax(dim=-1)
+                if include_lower_body_contacts is None:
+                    return upper_force
+                if isinstance(include_lower_body_contacts, bool):
+                    return all_body_force if include_lower_body_contacts else upper_force
+                return torch.where(include_lower_body_contacts.bool(), all_body_force, upper_force)
             if hasattr(sensor.data, "net_forces_w"):
                 forces = sensor.data.net_forces_w
                 all_body_force = torch.linalg.norm(forces, dim=-1).amax(dim=-1)
@@ -1507,14 +1696,30 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         body_forces = getattr(self.robots[agent].data, "body_net_forces_w", None)
         if body_forces is None:
             return torch.zeros(self.num_envs, device=self.device)
-        return torch.linalg.norm(body_forces, dim=-1).amax(dim=-1)
+        body_ids = torch.arange(body_forces.shape[1], device=self.device, dtype=torch.long)
+        return self._selected_ground_contact_force(agent, body_ids)
 
     def _support_contact_force(self, agent: str) -> torch.Tensor:
+        return self._selected_ground_contact_force(agent, self._support_body_id_tensors.get(agent))
+
+    def _selected_ground_contact_force(self, agent: str, body_ids: torch.Tensor | None) -> torch.Tensor:
         body_forces = getattr(self.robots[agent].data, "body_net_forces_w", None)
-        support_ids = self._support_body_id_tensors.get(agent)
-        if body_forces is None or support_ids is None or support_ids.numel() == 0:
+        body_pos_w = getattr(self.robots[agent].data, "body_pos_w", None)
+        if body_forces is None or body_ids is None or body_ids.numel() == 0:
             return torch.zeros(self.num_envs, device=self.device)
-        return torch.linalg.norm(body_forces.index_select(1, support_ids), dim=-1).amax(dim=-1)
+        selected_forces = body_forces.index_select(1, body_ids)
+        force_norm = torch.linalg.norm(selected_forces, dim=-1)
+        if body_pos_w is None:
+            return force_norm.amax(dim=-1)
+        selected_pos = body_pos_w.index_select(1, body_ids)
+        env_floor_z = self.scene.env_origins[:, 2].unsqueeze(-1)
+        height = selected_pos[:, :, 2] - env_floor_z
+        near_ground = height <= float(self.cfg.contact.support_ground_contact_height)
+        vertical_fraction = torch.abs(selected_forces[:, :, 2]) / torch.clamp(force_norm, min=1.0e-6)
+        min_vertical = float(self.cfg.contact.support_ground_vertical_force_fraction)
+        if min_vertical > 0.0:
+            near_ground = near_ground & (vertical_fraction >= min_vertical)
+        return (force_norm * near_ground.float()).amax(dim=-1)
 
     def _support_quality(self, agent: str) -> torch.Tensor:
         support_force = self._support_contact_force(agent)
@@ -1722,8 +1927,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
 
     def _support_contact_sides(self, agent: str) -> tuple[torch.Tensor, torch.Tensor]:
         threshold = 0.05 * self.cfg.contact.force_normalizer
-        left = self._selected_body_contact_force(agent, self._left_support_body_id_tensors.get(agent)) > threshold
-        right = self._selected_body_contact_force(agent, self._right_support_body_id_tensors.get(agent)) > threshold
+        left = self._selected_ground_contact_force(agent, self._left_support_body_id_tensors.get(agent)) > threshold
+        right = self._selected_ground_contact_force(agent, self._right_support_body_id_tensors.get(agent)) > threshold
         return left.float(), right.float()
 
     def _side_support_clearance(self, agent: str, body_ids: torch.Tensor | None) -> torch.Tensor:
@@ -1919,29 +2124,48 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         motion_prior = getattr(self.cfg, "motion_prior", None)
         if motion_prior is None or not motion_prior.enabled or motion_prior.reward_scale <= 0.0:
             return torch.zeros(self.num_envs, device=self.device)
-        rel = self.root_pos(opponent) - self.root_pos(agent)
-        distance = torch.linalg.norm(rel[:, :2], dim=-1)
-        rel_dir = normalize(torch.cat((rel[:, :2], torch.zeros_like(rel[:, 2:3])), dim=-1))
-        toward_speed = torch.relu(torch.sum(self.root_lin_vel_w(agent) * rel_dir, dim=-1))
-        stand = self._stance_quality(agent) * self._standing_pose_quality(agent)
-        gait = (
-            self._feet_air_time_biped(agent)
-            + self._support_clearance(agent) * torch.clamp(toward_speed / 1.0, 0.0, 1.0)
-            + torch.clamp(torch.abs(self._support_bias(agent) - self._prev_support_bias[agent]) / 0.75, 0.0, 1.0)
-        ) / 3.0
-        brace = self._capture_point_support_quality(agent) * self._support_quality(agent) * (
-            0.5 + 0.5 * self._perturbation_active(agent)
-        )
-        push = (
-            torch.clamp(self._selected_push_contact_force(agent) / self.cfg.contact.force_normalizer, 0.0, 1.0)
-            * self._both_feet_support(agent)
-            * (distance < 1.35).float()
-        )
+        data = self._motion_prior_data
+        frame_count = int(self._motion_prior_frame_count)
+        if data is None or frame_count <= 0:
+            return torch.zeros(self.num_envs, device=self.device)
+
+        frame_idx = (self._motion_prior_phase[agent] + self.episode_length_buf.long()) % frame_count
+        target_joint_pos = data["joint_pos"][agent].index_select(0, frame_idx)
+        if data["joint_pos_relative"]:
+            current_joint_pos = self.joint_pos_rel(agent)
+        else:
+            ids = self._runtime[agent].joint_ids
+            current_joint_pos = self.robots[agent].data.joint_pos[:, ids]
+        pose_sigma = max(float(motion_prior.pose_sigma), 1.0e-6)
+        pose_reward = torch.exp(-torch.mean(torch.square((current_joint_pos - target_joint_pos) / pose_sigma), dim=-1))
+
+        velocity_reward = torch.zeros(self.num_envs, device=self.device)
+        target_joint_vel_by_agent = data.get("joint_vel")
+        if target_joint_vel_by_agent is not None:
+            target_joint_vel_data = target_joint_vel_by_agent[agent]
+            target_joint_vel = target_joint_vel_data.index_select(0, frame_idx % int(target_joint_vel_data.shape[0]))
+            velocity_sigma = max(float(motion_prior.velocity_sigma), 1.0e-6)
+            velocity_reward = torch.exp(
+                -torch.mean(torch.square((self.joint_vel(agent) - target_joint_vel) / velocity_sigma), dim=-1)
+            )
+
+        root_height_reward = torch.zeros(self.num_envs, device=self.device)
+        target_root_height = data.get("root_height")
+        if target_root_height is not None:
+            height_idx = frame_idx % int(target_root_height.shape[0])
+            height_sigma = max(float(motion_prior.root_height_sigma), 1.0e-6)
+            root_height_reward = torch.exp(
+                -torch.square((self.root_pos(agent)[:, 2] - target_root_height.index_select(0, height_idx)) / height_sigma)
+            )
+
+        upright_reward = torch.clamp(self._up_z[agent], 0.0, 1.0)
+        support_reward = self._support_quality(agent)
         reward = (
-            float(motion_prior.stand_pose_weight) * stand
-            + float(motion_prior.gait_weight) * gait
-            + float(motion_prior.brace_weight) * brace
-            + float(motion_prior.push_weight) * push
+            float(motion_prior.pose_weight) * pose_reward
+            + float(motion_prior.velocity_weight) * velocity_reward
+            + float(motion_prior.root_height_weight) * root_height_reward
+            + float(motion_prior.upright_weight) * upright_reward
+            + float(motion_prior.support_weight) * support_reward
         )
         return float(motion_prior.reward_scale) * torch.clamp(reward, 0.0, 2.0)
 
