@@ -152,6 +152,8 @@ class MotionPriorCfg:
     velocity_sigma: float = 5.0
     root_height_sigma: float = 0.18
     sample_random_phase: bool = True
+    min_joint_name_coverage: float = 0.80
+    allow_unnamed_dim_match: bool = True
 
 
 @configclass

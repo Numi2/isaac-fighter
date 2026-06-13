@@ -47,3 +47,5 @@ Bootstrap artifacts:
 - Use `scripts/tools/export_amp_rollout_features.py` to collect policy-generated AMP feature negatives.
 - Use `scripts/tools/train_amp_discriminator.py` to train a discriminator from reference motion positives and rollout
   negatives, then pass it to training with `--motion_prior_discriminator`.
+- Motion-prior joint tensors are mapped by joint name when names are present. Keep `--motion_prior_min_joint_name_coverage`
+  high for G1 runs; use unnamed dimensional fallback only for artifacts known to use the exact controlled-joint order.

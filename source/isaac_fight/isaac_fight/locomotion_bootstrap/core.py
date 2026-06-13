@@ -47,13 +47,13 @@ class VelocityRobotSpec:
 VELOCITY_SPECS: dict[str, VelocityRobotSpec] = {
     "g1_29dof": VelocityRobotSpec(
         robot_name="g1_29dof",
-        task_name="Unitree-G1-29dof-Velocity",
+        task_name="Isaac-Velocity-Flat-G1-v0",
         fight_agent=FIGHTER_A,
         action_dim=get_unitree_robot_spec("g1_29dof").action_dim,
     ),
     "h1": VelocityRobotSpec(
         robot_name="h1",
-        task_name="Unitree-H1-Velocity",
+        task_name="Isaac-Velocity-Flat-H1-v0",
         fight_agent=FIGHTER_B,
         action_dim=get_unitree_robot_spec("h1").action_dim,
     ),

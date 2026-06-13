@@ -611,20 +611,49 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self, tensor: torch.Tensor, joint_names: list[str], agent: str
     ) -> torch.Tensor:
         action_dim = self._runtime[agent].action_dim
-        if tensor.shape[-1] == action_dim:
-            return tensor
         if joint_names:
-            index_by_name = {name: idx for idx, name in enumerate(joint_names)}
-            out = torch.zeros(tensor.shape[0], action_dim, device=self.device, dtype=tensor.dtype)
-            for out_idx, name in enumerate(self._runtime[agent].joint_names):
-                source_idx = index_by_name.get(name)
-                if source_idx is not None and source_idx < tensor.shape[-1]:
-                    out[:, out_idx] = tensor[:, source_idx]
-            return out
-        if tensor.shape[-1] > action_dim:
-            return tensor[:, :action_dim]
-        pad = torch.zeros(tensor.shape[0], action_dim - tensor.shape[-1], device=self.device, dtype=tensor.dtype)
-        return torch.cat((tensor, pad), dim=-1)
+            return self._map_named_motion_prior_joints(tensor, joint_names, agent)
+        if tensor.shape[-1] == action_dim and self.cfg.motion_prior.allow_unnamed_dim_match:
+            return tensor
+        raise ValueError(
+            f"motion prior joint tensor width {tensor.shape[-1]} does not match {agent} action_dim={action_dim} "
+            "and no joint_names/dof_names were provided for safe mapping"
+        )
+
+    def _map_named_motion_prior_joints(
+        self, tensor: torch.Tensor, joint_names: list[str], agent: str
+    ) -> torch.Tensor:
+        action_dim = self._runtime[agent].action_dim
+        if len(joint_names) < tensor.shape[-1]:
+            joint_names = [*joint_names, *(f"__unnamed_{idx}" for idx in range(len(joint_names), tensor.shape[-1]))]
+        elif len(joint_names) > tensor.shape[-1]:
+            joint_names = joint_names[: tensor.shape[-1]]
+        target_names = self._runtime[agent].joint_names
+        index_by_name = {name: idx for idx, name in enumerate(joint_names)}
+        out = torch.zeros(tensor.shape[0], action_dim, device=self.device, dtype=tensor.dtype)
+        matched = 0
+        missing: list[str] = []
+        for out_idx, name in enumerate(target_names):
+            source_idx = index_by_name.get(name)
+            if source_idx is not None and source_idx < tensor.shape[-1]:
+                out[:, out_idx] = tensor[:, source_idx]
+                matched += 1
+            else:
+                missing.append(name)
+        coverage = matched / max(action_dim, 1)
+        min_coverage = max(0.0, min(1.0, float(self.cfg.motion_prior.min_joint_name_coverage)))
+        if coverage < min_coverage:
+            raise ValueError(
+                f"motion prior joint-name coverage {coverage:.2f} below required {min_coverage:.2f} "
+                f"for {agent}; missing examples: {missing[:8]}"
+            )
+        if missing:
+            print(
+                f"[WARN] Motion prior mapped {matched}/{action_dim} joints for {agent}; "
+                f"missing examples: {missing[:6]}",
+                flush=True,
+            )
+        return out
 
     def _load_motion_prior_discriminator(self) -> None:
         path_value = str(getattr(self.cfg.motion_prior, "discriminator_path", "") or "")

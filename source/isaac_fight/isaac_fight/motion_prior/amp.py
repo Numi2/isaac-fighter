@@ -63,6 +63,8 @@ def build_reference_amp_features(
     joint_velocity_scale: float = 0.05,
     base_linear_velocity_scale: float = 0.5,
     base_angular_velocity_scale: float = 0.2,
+    min_joint_name_coverage: float = 0.80,
+    allow_unnamed_dim_match: bool = True,
     device: str | torch.device = "cpu",
 ) -> torch.Tensor:
     joint_names = motion_joint_names(raw)
@@ -75,7 +77,13 @@ def build_reference_amp_features(
         joint_pos = motion_tensor(raw, ("joint_pos", "joint_positions", "dof_pos", "qpos", "target_joint_pos"), device=device)
     if joint_pos is None:
         raise ValueError("motion artifact has no joint position tensor")
-    joint_pos = adapt_motion_joints(joint_pos, joint_names, target_joint_names)
+    joint_pos = adapt_motion_joints(
+        joint_pos,
+        joint_names,
+        target_joint_names,
+        min_joint_name_coverage=min_joint_name_coverage,
+        allow_unnamed_dim_match=allow_unnamed_dim_match,
+    )
     frame_count = int(joint_pos.shape[0])
     action_dim = int(joint_pos.shape[-1])
 
@@ -83,7 +91,16 @@ def build_reference_amp_features(
     if joint_vel is None:
         joint_vel = torch.zeros(frame_count, action_dim, device=device)
     else:
-        joint_vel = _match_rows(adapt_motion_joints(joint_vel, joint_names, target_joint_names), frame_count)
+        joint_vel = _match_rows(
+            adapt_motion_joints(
+                joint_vel,
+                joint_names,
+                target_joint_names,
+                min_joint_name_coverage=min_joint_name_coverage,
+                allow_unnamed_dim_match=allow_unnamed_dim_match,
+            ),
+            frame_count,
+        )
 
     root_lin_vel = motion_tensor(
         raw,
@@ -220,22 +237,42 @@ def adapt_motion_joints(
     tensor: torch.Tensor,
     source_joint_names: list[str],
     target_joint_names: tuple[str, ...] | list[str],
+    *,
+    min_joint_name_coverage: float = 0.80,
+    allow_unnamed_dim_match: bool = True,
 ) -> torch.Tensor:
     action_dim = len(target_joint_names)
-    if tensor.shape[-1] == action_dim:
-        return tensor
     if source_joint_names:
-        index_by_name = {name: idx for idx, name in enumerate(source_joint_names)}
+        names = list(source_joint_names)
+        if len(names) < tensor.shape[-1]:
+            names = [*names, *(f"__unnamed_{idx}" for idx in range(len(names), tensor.shape[-1]))]
+        elif len(names) > tensor.shape[-1]:
+            names = names[: tensor.shape[-1]]
+        index_by_name = {name: idx for idx, name in enumerate(names)}
         out = torch.zeros(tensor.shape[0], action_dim, device=tensor.device, dtype=tensor.dtype)
+        matched = 0
+        missing: list[str] = []
         for out_idx, name in enumerate(target_joint_names):
             source_idx = index_by_name.get(name)
             if source_idx is not None and source_idx < tensor.shape[-1]:
                 out[:, out_idx] = tensor[:, source_idx]
+                matched += 1
+            else:
+                missing.append(str(name))
+        coverage = matched / max(action_dim, 1)
+        required = max(0.0, min(1.0, float(min_joint_name_coverage)))
+        if coverage < required:
+            raise ValueError(
+                f"motion joint-name coverage {coverage:.2f} below required {required:.2f}; "
+                f"missing examples: {missing[:8]}"
+            )
         return out
-    if tensor.shape[-1] > action_dim:
-        return tensor[:, :action_dim]
-    pad = torch.zeros(tensor.shape[0], action_dim - tensor.shape[-1], device=tensor.device, dtype=tensor.dtype)
-    return torch.cat((tensor, pad), dim=-1)
+    if tensor.shape[-1] == action_dim and allow_unnamed_dim_match:
+        return tensor
+    raise ValueError(
+        f"motion joint tensor width {tensor.shape[-1]} does not match target action_dim={action_dim} "
+        "and no joint_names/dof_names were provided for safe mapping"
+    )
 
 
 def _match_rows(tensor: torch.Tensor, frame_count: int) -> torch.Tensor:

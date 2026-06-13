@@ -113,6 +113,7 @@ AMP/mimic bootstrap loop:
 python /path/to/isaac-fight/scripts/tools/train_amp_discriminator.py \
   --motion_prior_artifact /path/to/unitree_g1_mimic_motion.npz \
   --negative_features /path/to/amp/rollout_negatives.pt \
+  --min_joint_name_coverage 0.90 \
   --output /path/to/amp/g1_amp_discriminator.pt
 
 ./isaaclab.sh -p /path/to/isaac-fight/scripts/skrl/train.py \
@@ -124,6 +125,7 @@ python /path/to/isaac-fight/scripts/tools/train_amp_discriminator.py \
   --motion_prior_reward_scale 1.0 \
   --motion_prior_amp_reward_weight 1.0 \
   --motion_prior_mimic_reward_weight 0.35 \
+  --motion_prior_min_joint_name_coverage 0.90 \
   --headless
 ```
 

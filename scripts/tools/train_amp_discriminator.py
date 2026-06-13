@@ -48,6 +48,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_negative_samples", type=int, default=200_000)
     parser.add_argument("--synthetic_negative_ratio", type=float, default=1.0)
     parser.add_argument("--synthetic_noise", type=float, default=0.45)
+    parser.add_argument("--min_joint_name_coverage", type=float, default=0.80)
+    parser.add_argument(
+        "--disallow_unnamed_dim_match",
+        action="store_true",
+        default=False,
+        help="Reject motion artifacts without joint names even when tensor width matches the robot action dimension.",
+    )
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--torchscript_output", default="", help="Optional TorchScript discriminator output path.")
     return parser.parse_args()
@@ -62,6 +69,8 @@ def main() -> None:
         raw,
         spec.controlled_joint_names,
         default_base_height=spec.default_base_height,
+        min_joint_name_coverage=args.min_joint_name_coverage,
+        allow_unnamed_dim_match=not args.disallow_unnamed_dim_match,
         device=device,
     )
     reference = _subsample(reference, args.max_reference_samples)
@@ -107,6 +116,8 @@ def main() -> None:
         "negative_samples": int(negative.shape[0]),
         "motion_prior_artifact": str(Path(args.motion_prior_artifact).expanduser()),
         "negative_feature_files": [str(Path(path).expanduser()) for path in args.negative_features],
+        "min_joint_name_coverage": float(args.min_joint_name_coverage),
+        "allow_unnamed_dim_match": not bool(args.disallow_unnamed_dim_match),
     }
     torch.save(payload, output)
     if args.torchscript_output:

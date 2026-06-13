@@ -1,10 +1,13 @@
 # Unitree G1 Config Notes
 
-Source mined from `unitreerobotics/unitree_rl_lab` on June 13, 2026.
+Source mined from `unitreerobotics/unitree_rl_lab` and official Isaac Lab G1 velocity configs on June 13, 2026.
 
 High-value G1-29DoF defaults:
 
-- Velocity task: `Unitree-G1-29dof-Velocity`.
+- Velocity tasks: `Isaac-Velocity-Flat-G1-v0` first, then `Isaac-Velocity-Rough-G1-v0` once flat standing/walking is
+  solid.
+- Official flat G1 config limits command ranges to forward `0.0..1.0 m/s`, lateral `-0.5..0.5 m/s`, yaw
+  `-1.0..1.0 rad/s`, keeps feet air-time reward active, and disables random pushes in play mode.
 - Default base height: `0.8`.
 - Velocity deploy step: `0.02` seconds.
 - Velocity deploy action scale: `0.25` for all 29 joints.
@@ -24,5 +27,7 @@ Isaac Fight implications:
 - Prefer residual combat learning on top of a frozen locomotion/warm-start policy before training full-body combat from
   random initialization.
 - Treat Unitree mimic `.npz` motion files as AMP/motion-prior bootstrap artifacts, not opponent policies.
+- Motion-prior artifacts must either provide joint names for name-based remapping or exactly match the G1 controlled
+  joint width. Low joint-name coverage is rejected because shuffled or padded motion data gives misleading style reward.
 - Train AMP discriminators against actual failed/current rollout features from `export_amp_rollout_features.py`; synthetic
   negatives from `train_amp_discriminator.py` are a fast cold-start fallback, not the final style signal.

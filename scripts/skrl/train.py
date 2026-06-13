@@ -79,6 +79,8 @@ parser.add_argument("--motion_prior_reward_scale", type=float, default=0.0)
 parser.add_argument("--motion_prior_mimic_reward_weight", type=float, default=None)
 parser.add_argument("--motion_prior_amp_reward_weight", type=float, default=None)
 parser.add_argument("--motion_prior_discriminator_output_is_probability", action="store_true", default=False)
+parser.add_argument("--motion_prior_min_joint_name_coverage", type=float, default=None)
+parser.add_argument("--motion_prior_disallow_unnamed_dim_match", action="store_true", default=False)
 parser.add_argument("--enable_pbt", action="store_true", default=False)
 parser.add_argument("--pbt_mutation_seed", type=int, default=0)
 parser.add_argument("--pbt_mutation_scale", type=float, default=0.15)
@@ -529,6 +531,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             env_cfg.motion_prior.amp_reward_weight = args_cli.motion_prior_amp_reward_weight
         if args_cli.motion_prior_discriminator_output_is_probability:
             env_cfg.motion_prior.discriminator_output_is_probability = True
+        if args_cli.motion_prior_min_joint_name_coverage is not None:
+            env_cfg.motion_prior.min_joint_name_coverage = args_cli.motion_prior_min_joint_name_coverage
+        if args_cli.motion_prior_disallow_unnamed_dim_match:
+            env_cfg.motion_prior.allow_unnamed_dim_match = False
     if args_cli.enable_pbt and hasattr(env_cfg, "pbt"):
         env_cfg.pbt.enabled = True
         env_cfg.pbt.mutation_seed = int(args_cli.pbt_mutation_seed)
