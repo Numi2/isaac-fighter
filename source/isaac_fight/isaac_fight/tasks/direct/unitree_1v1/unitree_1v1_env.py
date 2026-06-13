@@ -1820,7 +1820,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             0.0,
             1.0,
         )
-        return torch.clamp(0.20 + 0.80 * stance * support, 0.0, 1.0)
+        return torch.clamp(stance * support, 0.0, 1.0)
 
     def _phase_features(self, agent: str, opponent: str) -> torch.Tensor:
         episode_time = self.episode_length_buf.float() * self.step_dt
@@ -1894,6 +1894,14 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         stance = torch.clamp((self._stance_quality(agent) - 0.25) / 0.50, 0.0, 1.0)
         phase = torch.clamp(self._curriculum_phase_weights(agent, opponent_of(agent))["attack"], 0.0, 1.0)
         return warmup * stance * torch.clamp(0.20 + 0.80 * phase, 0.0, 1.0)
+
+    def _stable_attack_gate(self, agent: str) -> torch.Tensor:
+        stance = torch.clamp((self._stance_quality(agent) - 0.45) / 0.35, 0.0, 1.0)
+        support = torch.clamp((self._support_quality(agent) - 0.40) / 0.35, 0.0, 1.0)
+        capture = torch.clamp((self._capture_point_support_quality(agent) - 0.35) / 0.35, 0.0, 1.0)
+        both_feet = torch.clamp(self._both_feet_support(agent), 0.0, 1.0)
+        alive = (~self._fallen[agent]).float()
+        return torch.clamp(stance * support * capture * (0.35 + 0.65 * both_feet) * alive, 0.0, 1.0)
 
     def _waist_action_magnitude(self, agent: str) -> torch.Tensor:
         waist_ids = self._waist_action_id_tensors.get(agent)

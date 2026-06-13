@@ -189,6 +189,8 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
         env_cfg.curriculum.hand_push_phase_steps = min(int(env_cfg.curriculum.hand_push_phase_steps), 28_000)
         env_cfg.curriculum.body_slam_phase_steps = min(int(env_cfg.curriculum.body_slam_phase_steps), 48_000)
         env_cfg.curriculum.full_fight_phase_steps = min(int(env_cfg.curriculum.full_fight_phase_steps), 80_000)
+        env_cfg.curriculum.phase_min_stance_quality = max(float(env_cfg.curriculum.phase_min_stance_quality), 0.55)
+        env_cfg.curriculum.phase_min_support_quality = max(float(env_cfg.curriculum.phase_min_support_quality), 0.50)
         env_cfg.curriculum.fall_recovery_reset_probability = max(
             float(env_cfg.curriculum.fall_recovery_reset_probability), 0.12
         )
@@ -257,6 +259,10 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
             float(env_cfg.rewards.opponent_angular_destabilization), 5.0
         )
         env_cfg.rewards.torso_grounded_penalty = max(float(env_cfg.rewards.torso_grounded_penalty), 18.0)
+        env_cfg.rewards.unstable_attack = max(float(env_cfg.rewards.unstable_attack), 22.0)
+        env_cfg.rewards.collapse_contact_credit = max(float(env_cfg.rewards.collapse_contact_credit), 28.0)
+        env_cfg.rewards.forward_collapse = max(float(env_cfg.rewards.forward_collapse), 24.0)
+        env_cfg.rewards.torso_first_contact = max(float(env_cfg.rewards.torso_first_contact), 22.0)
         env_cfg.rewards.root_height_velocity_down = max(float(env_cfg.rewards.root_height_velocity_down), 25.0)
         env_cfg.rewards.torso_only_motion = max(float(env_cfg.rewards.torso_only_motion), 24.0)
         env_cfg.rewards.attack_momentum = max(float(env_cfg.rewards.attack_momentum), 3.4)
@@ -375,6 +381,10 @@ def _apply_pbt_reward_mutation(env_cfg, seed: int, mutation_scale: float) -> Non
         "one_hand_push_destabilize",
         "opponent_support_break",
         "impact_self_destabilization",
+        "unstable_attack",
+        "collapse_contact_credit",
+        "forward_collapse",
+        "torso_first_contact",
         "mutual_fall_hard_penalty",
     )
     scale = max(0.0, float(mutation_scale))

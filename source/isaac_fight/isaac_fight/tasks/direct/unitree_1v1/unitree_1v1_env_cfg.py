@@ -253,6 +253,10 @@ class RewardScalesCfg:
     foot_plant_during_push: float = 1.60
     opponent_angular_destabilization: float = 2.40
     torso_grounded_penalty: float = 5.00
+    unstable_attack: float = 8.00
+    collapse_contact_credit: float = 10.00
+    forward_collapse: float = 8.00
+    torso_first_contact: float = 8.00
     motion_prior: float = 1.0
     root_height_velocity_down: float = 2.60
     torso_only_motion: float = 3.20

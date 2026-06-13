@@ -95,6 +95,8 @@ class CombatRewardComputer:
         backward_lean = torch.relu(projected_gravity_b[:, 0] - 0.08) * (0.5 + 0.5 * upright)
         waist_action = env._waist_action_magnitude(agent)
         combat_gate = env._combat_ready(agent)
+        stable_attack_gate = env._stable_attack_gate(agent)
+        attack_ready = combat_gate * stable_attack_gate
         episode_time = env.episode_length_buf.float() * env.step_dt
         warmup_s = float(env.cfg.curriculum.standing_warmup_s)
         warmup_gate = (episode_time < warmup_s).float()
@@ -132,8 +134,8 @@ class CombatRewardComputer:
             * (desired_approach_speed > 0.05).float()
         )
         yaw_heading_tracking = torch.exp(-torch.square(heading_error / 0.55)) * upright * (0.25 + 0.75 * action_gate)
-        controlled_approach = approach_delta * facing_gate * upright * combat_gate * approach_phase
-        locomotion_drive = env._locomotion_drive[agent] * facing_gate * upright * combat_gate * approach_phase
+        controlled_approach = approach_delta * facing_gate * upright * foot_support_quality * combat_gate * approach_phase
+        locomotion_drive = env._locomotion_drive[agent] * facing_gate * upright * foot_support_quality * combat_gate * approach_phase
         forward_step_progress = torch.relu(approach_delta) * foot_support_quality * facing_gate * approach_phase
         retreat_from_opponent = torch.relu(-toward_speed) * (distance > 0.45).float() * (0.3 + 0.7 * upright)
         approach_with_feet_gate = torch.relu(approach_delta) * facing_gate * foot_support_quality * combat_gate * approach_phase
@@ -156,8 +158,8 @@ class CombatRewardComputer:
             * approach_phase
         )
         root_height_velocity_down = torch.relu(env._prev_root_height[agent] - root_pos[:, 2]) / max(env.step_dt, 1.0e-6)
-        contact_intent = env._contact_intent[agent] * facing_gate * upright * env.proxy_reward_scale() * combat_gate
-        attack_momentum = env._attack_momentum[agent] * facing_gate * upright * combat_gate * attack_phase
+        contact_intent = env._contact_intent[agent] * facing_gate * upright * env.proxy_reward_scale() * attack_ready
+        attack_momentum = env._attack_momentum[agent] * facing_gate * upright * attack_ready * attack_phase
 
         radial = torch.linalg.norm(root_pos[:, :2], dim=-1)
         arena_control = torch.clamp(1.0 - torch.square(radial / env.cfg.arena.radius), 0.0, 1.0)
@@ -166,7 +168,7 @@ class CombatRewardComputer:
         outward_speed = torch.relu(torch.sum(root_lin_vel_w[:, :2] * radial_dir, dim=-1))
         wall_boundary_escape = torch.relu(radial / env.cfg.arena.radius - 0.82) * (1.0 + outward_speed)
 
-        useful_contact = env._useful_contact[agent] * upright * combat_gate
+        useful_contact = env._useful_contact[agent] * upright * attack_ready
         stable_contact_attack = useful_contact * env._stance_quality(agent)
         limb_contact_reward = (
             torch.clamp(env._strike_speed[agent] / env.cfg.contact.strike_speed_normalizer, 0.0, 2.0)
@@ -221,7 +223,7 @@ class CombatRewardComputer:
             * selected_push_speed
             * facing_gate
             * foot_support_quality
-            * combat_gate
+            * attack_ready
             * push_distance_gate
             * hand_push_phase
         )
@@ -253,15 +255,16 @@ class CombatRewardComputer:
             torso_contact
             * torch.clamp(toward_speed / env.cfg.contact.strike_speed_normalizer, 0.0, 2.0)
             * foot_support_quality
-            * combat_gate
+            * attack_ready
             * body_slam_phase
         )
-        destabilizing_impact = env._destabilizing_impact[agent] * upright * combat_gate * attack_phase
-        topple_pressure = env._topple_pressure[agent] * upright * combat_gate * attack_phase
-        drive_pressure = env._drive_pressure[agent] * upright * combat_gate * attack_phase
-        support_break_pressure = env._support_break_pressure[agent] * upright * combat_gate * attack_phase
-        recent_attack = torch.clamp(env._recent_attack_pressure[agent], 0.0, 5.0) * combat_gate
-        attack_credit = torch.maximum(torch.clamp(env._proof_impact[agent], 0.0, 5.0), recent_attack)
+        destabilizing_impact = env._destabilizing_impact[agent] * upright * attack_ready * attack_phase
+        topple_pressure = env._topple_pressure[agent] * upright * attack_ready * attack_phase
+        drive_pressure = env._drive_pressure[agent] * upright * attack_ready * attack_phase
+        support_break_pressure = env._support_break_pressure[agent] * upright * attack_ready * attack_phase
+        raw_recent_attack = torch.clamp(env._recent_attack_pressure[agent], 0.0, 5.0) * combat_gate
+        raw_attack_credit = torch.maximum(torch.clamp(env._proof_impact[agent], 0.0, 5.0), raw_recent_attack)
+        attack_credit = raw_attack_credit * stable_attack_gate
         attack_gate = torch.clamp(attack_credit, 0.0, 1.0)
         opp_destabilization = env._opponent_destabilization[agent] * attack_gate
         proof = (attack_credit >= env.cfg.contact.fall_credit_min_attack).float()
@@ -280,11 +283,21 @@ class CombatRewardComputer:
             * (attack_credit < 0.10).float()
         )
         bad_contact_penalty = torso_contact * (1.0 - foot_support_quality) * (attack_credit < 0.15).float()
-        torso_grounded_penalty = (
-            torso_contact
-            * (support_quality < 0.25).float()
-            * (height_ratio < 0.82).float()
-            * (attack_credit < 0.20).float()
+        unstable_attack = raw_attack_credit * (1.0 - stable_attack_gate) * after_warmup * (0.30 + 0.70 * attack_phase)
+        collapse_contact_credit = raw_attack_credit * (1.0 - stable_attack_gate) * (
+            0.50 + torch.clamp(root_height_velocity_down / 1.5, 0.0, 2.0) + torch.clamp(low_base_height, 0.0, 2.0)
+        )
+        forward_collapse = (
+            torch.relu(toward_speed)
+            * (1.0 - stable_attack_gate)
+            * after_warmup
+            * (0.40 + 0.40 * torch.clamp(root_height_velocity_down / 1.0, 0.0, 3.0) + 0.20 * base_pitch_roll)
+        )
+        torso_first_contact = torso_contact * (1.0 - stable_attack_gate) * after_warmup * (
+            0.50 + torch.clamp(raw_attack_credit, 0.0, 2.0)
+        )
+        torso_grounded_penalty = torso_contact * (support_quality < 0.35).float() * (height_ratio < 0.90).float() * (
+            0.50 + torch.clamp(raw_attack_credit, 0.0, 2.0)
         )
         opponent_tilt_delta = torch.relu(env._prev_up_z[opponent] - env._up_z[opponent]) * attack_gate
         opponent_height_drop_delta = torch.relu(env._prev_root_height[opponent] - opp_pos[:, 2]) * attack_gate
@@ -305,8 +318,8 @@ class CombatRewardComputer:
         )
         clean_knockdown_bonus = clean_attack * env._new_knockdown[opponent].float()
         mutual_fall_hard_penalty = mutual_fall + env._new_fall[agent].float() * env._fallen[opponent].float()
-        impact_balance = attack_credit * balance_recovery * (1.0 - self_fall)
-        impact_self_destabilization = attack_credit * (
+        impact_balance = attack_credit * balance_recovery * stable_attack_gate * (1.0 - self_fall)
+        impact_self_destabilization = raw_attack_credit * (
             (1.0 - upright) + 0.50 * torch.clamp(lateral_ang_vel / 4.0, 0.0, 2.0) + self_fall
         )
 
@@ -390,6 +403,9 @@ class CombatRewardComputer:
             "motion_prior": scales.motion_prior * motion_prior,
             "root_height_velocity_down": -scales.root_height_velocity_down * root_height_velocity_down,
             "torso_only_motion": -scales.torso_only_motion * torso_only_motion,
+            "unstable_attack": -scales.unstable_attack * unstable_attack,
+            "collapse_contact_credit": -scales.collapse_contact_credit * collapse_contact_credit,
+            "forward_collapse": -scales.forward_collapse * forward_collapse,
             "contact_intent": scales.contact_intent * contact_intent,
             "attack_momentum": scales.attack_momentum * attack_momentum,
             "arena_control": scales.arena_control * arena_control,
@@ -403,6 +419,7 @@ class CombatRewardComputer:
             "offhand_push_penalty": -scales.offhand_push_penalty * offhand_push_penalty,
             "torso_charge_reward": scales.torso_charge_reward * torso_charge_reward,
             "bad_contact_penalty": -scales.bad_contact_penalty * bad_contact_penalty,
+            "torso_first_contact": -scales.torso_first_contact * torso_first_contact,
             "torso_grounded_penalty": -scales.torso_grounded_penalty * torso_grounded_penalty,
             "destabilizing_impact": scales.destabilizing_impact * destabilizing_impact,
             "topple_pressure": scales.topple_pressure * topple_pressure,
