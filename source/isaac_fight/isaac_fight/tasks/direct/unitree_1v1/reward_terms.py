@@ -72,6 +72,24 @@ class CombatRewardComputer:
             + knee_collapse
             + 2.0 * env._new_fall[agent].float()
         )
+        recovery_phase = (
+            (env._knockdown_clock[agent] > 0.0).float() + env._fallen[agent].float() + env._knockdown[agent].float()
+        ).clamp(0.0, 1.0)
+        fall_recovery_getup = (
+            recovery_phase
+            * (
+                torch.relu(up_z - env._prev_up_z[agent])
+                + torch.clamp(torch.relu(root_pos[:, 2] - env._prev_root_height[agent]) / 0.20, 0.0, 1.5)
+            )
+            * (0.25 + 0.75 * support_quality)
+        )
+        fall_recovery_stand = recovery_phase * env._stance_quality(agent) * env._both_feet_support(agent)
+        recovery_window = max(float(env.cfg.curriculum.fall_recovery_window_s), 1.0e-6)
+        fall_recovery_failure = (
+            recovery_phase
+            * (env._knockdown_clock[agent] / recovery_window).clamp(0.0, 1.0)
+            * (1.0 - env._stance_quality(agent))
+        )
         recovery_reward = torch.relu(up_z - env._prev_up_z[agent]) * support_quality * (~env._fallen[agent]).float()
         backward_motion = torch.relu(-root_lin_vel_b[:, 0]) * (0.35 + 0.65 * upright)
         backward_lean = torch.relu(projected_gravity_b[:, 0] - 0.08) * (0.5 + 0.5 * upright)
@@ -309,6 +327,9 @@ class CombatRewardComputer:
             "leg_extension_posture": scales.leg_extension_posture * leg_extension_posture,
             "perturbation_recovery": scales.perturbation_recovery * perturbation_recovery,
             "perturbation_collapse": -scales.perturbation_collapse * perturbation_collapse,
+            "fall_recovery_getup": scales.fall_recovery_getup * fall_recovery_getup,
+            "fall_recovery_stand": scales.fall_recovery_stand * fall_recovery_stand,
+            "fall_recovery_failure": -scales.fall_recovery_failure * fall_recovery_failure,
             "airborne_without_attack": -scales.airborne_without_attack * airborne_without_attack,
             "fall_early": -scales.fall_early * fall_early,
             "recovery_reward": scales.recovery_reward * recovery_reward,
@@ -362,7 +383,7 @@ class CombatRewardComputer:
             "stay_inside": scales.stay_inside * stay_inside,
             "self_contact_abuse": -scales.self_contact_abuse * self_contact_abuse,
             "wall_boundary_escape": -scales.wall_boundary_escape * wall_boundary_escape,
-            "energy_efficiency": -scales.energy * energy,
+            "energy": -scales.energy * energy,
             "self_fall": -scales.self_fall * self_fall,
             "out_of_bounds": -scales.out_of_bounds * env._out_of_bounds[agent].float(),
             "excessive_torque": -scales.excessive_torque * torque_penalty,

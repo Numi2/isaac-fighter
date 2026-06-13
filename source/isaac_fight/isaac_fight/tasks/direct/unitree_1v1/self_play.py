@@ -61,7 +61,7 @@ class SkrlCheckpointPolicyBackend:
         self.agent_id = agent_id
         self.device = torch.device(device if torch.cuda.is_available() and "cuda" in str(device) else "cpu")
         checkpoint = torch.load(self.path, map_location=self.device)
-        agent_checkpoint = checkpoint[agent_id] if agent_id in checkpoint else checkpoint
+        agent_checkpoint = checkpoint.get(agent_id, checkpoint) if isinstance(checkpoint, dict) else checkpoint
         state_dict = agent_checkpoint["policy"]
         self.obs_mean: torch.Tensor | None = None
         self.obs_var: torch.Tensor | None = None
@@ -71,7 +71,11 @@ class SkrlCheckpointPolicyBackend:
             self.obs_var = preprocessor["running_variance"].float().to(self.device)
         self.module = self._build_policy(state_dict).to(self.device)
         self.module.load_state_dict(
-            {key.removeprefix("net_container."): value for key, value in state_dict.items() if key.startswith("net_container.")}
+            {
+                key.removeprefix("net_container."): value
+                for key, value in state_dict.items()
+                if key.startswith("net_container.")
+            }
         )
         self.module.eval()
         first_layer = next((module for module in self.module if isinstance(module, nn.Linear)), None)
@@ -81,9 +85,7 @@ class SkrlCheckpointPolicyBackend:
     def _build_policy(state_dict: dict[str, torch.Tensor]) -> nn.Sequential:
         layers: list[nn.Module] = []
         linear_indices = sorted(
-            int(key.split(".")[1])
-            for key in state_dict
-            if key.startswith("net_container.") and key.endswith(".weight")
+            int(key.split(".")[1]) for key in state_dict if key.startswith("net_container.") and key.endswith(".weight")
         )
         for idx, layer_idx in enumerate(linear_indices):
             weight = state_dict[f"net_container.{layer_idx}.weight"]
@@ -126,7 +128,9 @@ class SelfPlayTrainingSupervisor:
         """Add unseen checkpoints to the policy pool and return the number added."""
 
         self.pool.load()
-        known_pooled_paths = {Path(p.checkpoint_path).resolve() for p in self.pool.policies if Path(p.checkpoint_path).exists()}
+        known_pooled_paths = {
+            Path(p.checkpoint_path).resolve() for p in self.pool.policies if Path(p.checkpoint_path).exists()
+        }
         known_source_paths = {
             str(p.metadata.get("source_checkpoint_path"))
             for p in self.pool.policies
@@ -140,7 +144,11 @@ class SelfPlayTrainingSupervisor:
             if str(resolved) in known_source_paths:
                 continue
             version = _version_from_path(candidate)
-            run_name = _safe_name(candidate.parent.parent.name if candidate.parent.name in {"checkpoints", "models"} else candidate.parent.name)
+            run_name = _safe_name(
+                candidate.parent.parent.name
+                if candidate.parent.name in {"checkpoints", "models"}
+                else candidate.parent.name
+            )
             pooled_name = f"{run_name}_{candidate.name}" if run_name else candidate.name
             pooled_path = Path(self.pool.root) / "checkpoints" / pooled_name
             if resolved in known_pooled_paths or (pooled_path.exists() and pooled_path.resolve() in known_pooled_paths):
@@ -151,16 +159,20 @@ class SelfPlayTrainingSupervisor:
             pooled_path.parent.mkdir(parents=True, exist_ok=True)
             if resolved != pooled_path.resolve():
                 shutil.copy2(candidate, pooled_path)
-            tags = ("skrl",) if _looks_like_skrl_checkpoint(candidate) else ("torchscript",)
-            policy_id = f"{run_name}_v{version:06d}" if run_name else f"policy_v{version:06d}"
             metadata = dict(self.metadata or {})
+            role = str(metadata.get("league_role", "main"))
+            base_tags = ("skrl",) if _looks_like_skrl_checkpoint(candidate) else ("torchscript",)
+            tags = (*base_tags, role, f"role:{role}")
+            policy_id = f"{run_name}_v{version:06d}" if run_name else f"policy_v{version:06d}"
             metadata.setdefault("source_run", run_name)
             metadata.setdefault("source_checkpoint", candidate.name)
             metadata["source_checkpoint_path"] = str(resolved)
             metadata["source_checkpoint_mtime_ns"] = int(source_stat.st_mtime_ns)
             metadata["source_checkpoint_size"] = int(source_stat.st_size)
             metadata["promotion_proof_impact"] = promotion_metric
-            self.pool.add_checkpoint(pooled_path, version=version, policy_id=policy_id, elo=self.active_elo, tags=tags, metadata=metadata)
+            self.pool.add_checkpoint(
+                pooled_path, version=version, policy_id=policy_id, elo=self.active_elo, tags=tags, metadata=metadata
+            )
             known_pooled_paths.add(pooled_path.resolve())
             known_source_paths.add(str(resolved))
             added += 1
@@ -182,7 +194,9 @@ class SelfPlayTrainingSupervisor:
             from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
         except Exception:
             return None
-        log_dir = self.checkpoint_dir.parent if self.checkpoint_dir.name in {"checkpoints", "models"} else self.checkpoint_dir
+        log_dir = (
+            self.checkpoint_dir.parent if self.checkpoint_dir.name in {"checkpoints", "models"} else self.checkpoint_dir
+        )
         try:
             accumulator = EventAccumulator(str(log_dir))
             accumulator.Reload()
@@ -247,6 +261,7 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         update_interval_steps: int = 1000,
         side_swap_probability: float = 0.5,
         live_self_play_fraction: float = 0.25,
+        league_role_weights: dict[str, float] | None = None,
         train_active_only: bool = True,
     ):
         super().__init__(env)
@@ -262,6 +277,7 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         self.update_interval_steps = max(1, int(update_interval_steps))
         self.side_swap_probability = max(0.0, min(1.0, float(side_swap_probability)))
         self.live_self_play_fraction = max(0.0, min(1.0, float(live_self_play_fraction)))
+        self.league_role_weights = league_role_weights or {}
         self.train_active_only = train_active_only
         self._last_obs: dict[str, torch.Tensor] | None = None
         self._current_sample: OpponentSample | None = None
@@ -347,6 +363,7 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
             elo_window=self.elo_window,
             weakness_bias=self.weakness_bias,
             latest_bias=self.latest_bias,
+            league_role_weights=self.league_role_weights,
         )
         self._current_sample = sample
         self._backends = {}
@@ -427,6 +444,97 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         return float(mask.float().mean().item()) if mask is not None and mask.numel() else 0.0
 
 
+class ResidualLocomotionActionWrapper(gym.Wrapper):
+    """Compose frozen locomotion actions with trainable fight residual actions."""
+
+    def __init__(
+        self,
+        env: gym.Env,
+        checkpoint_path: str | Path,
+        device: str = "cuda:0",
+        base_action_scale: float = 1.0,
+        residual_action_scale: float = 0.35,
+        active_after_warmup: bool = True,
+    ):
+        super().__init__(env)
+        self.path = Path(checkpoint_path)
+        self.device = device
+        self.base_action_scale = float(base_action_scale)
+        self.residual_action_scale = float(residual_action_scale)
+        self.active_after_warmup = bool(active_after_warmup)
+        self._last_obs: dict[str, torch.Tensor] | None = None
+        self._backends: dict[str, PolicyBackend] = {}
+        self._load_backends()
+
+    def reset(self, **kwargs):  # noqa: ANN003
+        obs, info = self.env.reset(**kwargs)
+        self._last_obs = obs
+        return obs, info
+
+    def step(self, actions):  # noqa: ANN001
+        if self._last_obs is not None and self._backends:
+            actions = dict(actions)
+            warmup_gate = self._residual_warmup_gate()
+            for agent, backend in self._backends.items():
+                if agent not in actions or agent not in self._last_obs:
+                    continue
+                base_action = backend.act(self._last_obs[agent]) * self.base_action_scale
+                residual_action = actions[agent] * self.residual_action_scale
+                if warmup_gate is not None:
+                    residual_action = residual_action * warmup_gate.unsqueeze(-1)
+                actions[agent] = torch.clamp(base_action + residual_action, -1.0, 1.0)
+        obs, rewards, terminated, truncated, infos = self.env.step(actions)
+        self._last_obs = obs
+        if hasattr(self.env.unwrapped, "extras"):
+            extras = self.env.unwrapped.extras
+            for agent_info in extras.values():
+                if isinstance(agent_info, dict):
+                    agent_info.setdefault("residual_locomotion", {})
+                    agent_info["residual_locomotion"].update(
+                        {
+                            "enabled": bool(self._backends),
+                            "base_action_scale": self.base_action_scale,
+                            "residual_action_scale": self.residual_action_scale,
+                            "checkpoint_path": str(self.path),
+                        }
+                    )
+        return obs, rewards, terminated, truncated, infos
+
+    def _load_backends(self) -> None:
+        if not self.path.exists():
+            print(f"[WARN] Residual locomotion checkpoint does not exist: {self.path}", flush=True)
+            return
+        kind = (
+            "skrl"
+            if _looks_like_skrl_checkpoint(self.path)
+            else "torchscript"
+            if _looks_like_torchscript(self.path)
+            else None
+        )
+        if kind is None:
+            print(f"[WARN] Residual locomotion checkpoint is not skrl/TorchScript compatible: {self.path}", flush=True)
+            return
+        for agent in FIGHTERS:
+            try:
+                if kind == "skrl":
+                    self._backends[agent] = SkrlCheckpointPolicyBackend(self.path, agent_id=agent, device=self.device)
+                else:
+                    self._backends[agent] = TorchScriptPolicyBackend(self.path, device=self.device)
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[WARN] Could not load residual locomotion backend for {agent} from {self.path}: {exc}", flush=True
+                )
+
+    def _residual_warmup_gate(self) -> torch.Tensor | None:
+        if not self.active_after_warmup:
+            return None
+        base_env = self.env.unwrapped
+        gate_fn = getattr(base_env, "_standing_warmup_action_gate", None)
+        if callable(gate_fn):
+            return gate_fn()
+        return None
+
+
 def _version_from_path(path: Path) -> int:
     match = re.search(r"(\d+)(?!.*\d)", path.stem)
     return int(match.group(1)) if match else int(path.stat().st_mtime)
@@ -474,8 +582,35 @@ def maybe_wrap_historical_opponent(env: gym.Env, cfg, log_dir: str | Path | None
         update_interval_steps=getattr(cfg.self_play, "opponent_update_interval", 1000),
         side_swap_probability=getattr(cfg.self_play, "side_swap_probability", 0.5),
         live_self_play_fraction=getattr(cfg.self_play, "live_self_play_fraction", 0.25),
+        league_role_weights=_league_role_weights(cfg.self_play),
         train_active_only=True,
     )
+
+
+def maybe_wrap_residual_locomotion(env: gym.Env, cfg, args) -> gym.Env:  # noqa: ANN001
+    residual_cfg = getattr(cfg, "residual_locomotion", None)
+    checkpoint = getattr(args, "residual_locomotion_checkpoint", None) or getattr(residual_cfg, "checkpoint_path", "")
+    if not checkpoint:
+        return env
+    return ResidualLocomotionActionWrapper(
+        env,
+        checkpoint_path=checkpoint,
+        device=getattr(args, "device", "cuda:0") or "cuda:0",
+        base_action_scale=getattr(residual_cfg, "base_action_scale", 1.0),
+        residual_action_scale=getattr(residual_cfg, "residual_action_scale", 0.35),
+        active_after_warmup=getattr(residual_cfg, "active_after_warmup", True),
+    )
+
+
+def _league_role_weights(self_play_cfg) -> dict[str, float]:  # noqa: ANN001
+    if not getattr(self_play_cfg, "league_training_enabled", False):
+        return {}
+    return {
+        "main": float(getattr(self_play_cfg, "league_main_weight", 0.45)),
+        "shove_exploiter": float(getattr(self_play_cfg, "league_shove_exploiter_weight", 0.25)),
+        "body_slam_exploiter": float(getattr(self_play_cfg, "league_body_slam_exploiter_weight", 0.15)),
+        "balance_breaker": float(getattr(self_play_cfg, "league_balance_breaker_weight", 0.15)),
+    }
 
 
 def checkpoint_dir_from_log_dir(log_dir: str | Path) -> Path:

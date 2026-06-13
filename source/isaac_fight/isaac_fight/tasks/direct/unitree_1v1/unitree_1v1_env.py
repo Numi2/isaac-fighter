@@ -211,7 +211,10 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 action_scale=float(scale),
             )
             self._action_scale_tensors[agent] = torch.as_tensor(
-                [self._joint_action_scale_multiplier(name) for name in resolved_names],
+                [
+                    self._joint_action_scale_multiplier(name, fighter_cfg.action_scale_profile)
+                    for name in resolved_names
+                ],
                 dtype=torch.float32,
                 device=self.device,
             ).unsqueeze(0) * float(scale)
@@ -512,7 +515,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         return torch.clamp((episode_time - hold_s) / ramp_s, 0.0, 1.0)
 
     @staticmethod
-    def _joint_action_scale_multiplier(joint_name: str) -> float:
+    def _joint_action_scale_multiplier(joint_name: str, profile: str = "combat_safety") -> float:
+        if profile == "unitree_velocity":
+            return 1.0
         lower = joint_name.lower()
         if "waist" in lower or "torso" in lower:
             return 0.10
@@ -589,7 +594,10 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         if self.cfg.curriculum.enabled and self.cfg.curriculum.no_engagement_timeout_s > 0.0:
             no_engagement_timeout = self._no_engagement_clock >= self.cfg.curriculum.no_engagement_timeout_s
             self._time_out = self._time_out | no_engagement_timeout
-        knockout = {agent: self._knockdown_clock[agent] >= self.cfg.rules.knockout_grace_s for agent in FIGHTERS}
+        knockout_grace = float(self.cfg.rules.knockout_grace_s)
+        if self.cfg.curriculum.enabled and self.cfg.curriculum.fall_recovery_enabled:
+            knockout_grace = max(knockout_grace, float(self.cfg.curriculum.fall_recovery_window_s))
+        knockout = {agent: self._knockdown_clock[agent] >= knockout_grace for agent in FIGHTERS}
         terminal_by_loss = (
             knockout[FIGHTER_A] | knockout[FIGHTER_B] | self._out_of_bounds[FIGHTER_A] | self._out_of_bounds[FIGHTER_B]
         )
@@ -840,14 +848,15 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
 
         angle = 2.0 * math.pi * torch.rand(count, device=self.device)
         direction = torch.stack((torch.cos(angle), torch.sin(angle), torch.zeros_like(angle)), dim=-1)
-        linear_min = max(0.0, float(cfg.linear_velocity_min))
-        linear_max = max(linear_min, float(cfg.linear_velocity_max))
+        adr_scale = self._adr_scale()
+        linear_min = max(0.0, float(cfg.linear_velocity_min)) * (0.65 + 0.35 * adr_scale)
+        linear_max = max(linear_min, float(cfg.linear_velocity_max) * (1.0 + 0.60 * adr_scale))
         linear_mag = linear_min + (linear_max - linear_min) * torch.rand(count, device=self.device)
         linear_delta = direction * linear_mag.unsqueeze(-1) * active.unsqueeze(-1)
         self._perturb_linear_velocity[agent][env_ids] = linear_delta
 
-        angular_min = max(0.0, float(cfg.angular_velocity_min))
-        angular_max = max(angular_min, float(cfg.angular_velocity_max))
+        angular_min = max(0.0, float(cfg.angular_velocity_min)) * (0.65 + 0.35 * adr_scale)
+        angular_max = max(angular_min, float(cfg.angular_velocity_max) * (1.0 + 0.60 * adr_scale))
         angular_mag = angular_min + (angular_max - angular_min) * torch.rand(count, device=self.device)
         angular_sign = torch.where(
             torch.rand(count, device=self.device) < 0.5,
@@ -877,6 +886,21 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._perturb_applied[agent][env_ids] = True
             self._perturb_recovery_clock[agent][env_ids] = 0.0
             self._new_perturbation_event[agent][env_ids] = 1.0
+
+    def _adr_scale(self) -> float:
+        adr = getattr(self.cfg, "adr", None)
+        if adr is None or not adr.enabled:
+            return 0.0
+        if self.common_step_counter < int(adr.start_step):
+            return 0.0
+        stance = torch.stack([self._history_stance_quality[agent].mean() for agent in FIGHTERS]).mean()
+        support = torch.stack([self._history_support_quality[agent].mean() for agent in FIGHTERS]).mean()
+        if float(stance.item()) < float(adr.min_history_stance) or float(support.item()) < float(
+            adr.min_history_support
+        ):
+            return 0.0
+        progress = (self.common_step_counter - int(adr.start_step)) / max(float(adr.start_step), 1.0)
+        return max(0.0, min(float(adr.max_scale), progress))
 
     def _root_velocity_state_w(self, agent: str) -> torch.Tensor:
         data = self.robots[agent].data

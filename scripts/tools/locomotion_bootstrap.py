@@ -10,7 +10,12 @@ import argparse
 import json
 from pathlib import Path
 
-from isaac_fight.locomotion_bootstrap import create_fight_warmstart, inspect_rsl_rl_checkpoint, sync_locomotion_artifact
+from isaac_fight.locomotion_bootstrap import (
+    create_fight_warmstart,
+    inspect_rsl_rl_checkpoint,
+    sync_locomotion_artifact,
+    sync_motion_prior_artifact,
+)
 
 
 def main() -> None:
@@ -35,6 +40,13 @@ def main() -> None:
     warmstart_parser.add_argument("--robot", choices=["g1_29dof", "h1"])
     warmstart_parser.add_argument("--source_task")
 
+    motion_parser = subparsers.add_parser("motion-prior")
+    motion_parser.add_argument("motion_file", type=Path)
+    motion_parser.add_argument("--root", type=Path, default=Path("locomotion_bootstrap"))
+    motion_parser.add_argument("--robot", default="g1_29dof", choices=["g1_29dof", "h1"])
+    motion_parser.add_argument("--source_task", default="Unitree-G1-29dof-Mimic")
+    motion_parser.add_argument("--kind", default="unitree_g1_mimic_motion")
+
     args = parser.parse_args()
     if args.command == "inspect":
         info = inspect_rsl_rl_checkpoint(args.checkpoint, robot=args.robot, source_task=args.source_task)
@@ -56,6 +68,15 @@ def main() -> None:
             source_task=args.source_task,
         )
         report.print_summary()
+    elif args.command == "motion-prior":
+        record = sync_motion_prior_artifact(
+            args.motion_file,
+            root=args.root,
+            robot=args.robot,
+            source_task=args.source_task,
+            kind=args.kind,
+        )
+        print(json.dumps(record, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

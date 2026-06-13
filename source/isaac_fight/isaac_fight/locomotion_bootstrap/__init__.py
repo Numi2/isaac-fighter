@@ -12,6 +12,7 @@ from .core import (
     inspect_rsl_rl_checkpoint,
     is_locomotion_warmstart_checkpoint,
     sync_locomotion_artifact,
+    sync_motion_prior_artifact,
 )
 
 __all__ = [
@@ -23,4 +24,5 @@ __all__ = [
     "inspect_rsl_rl_checkpoint",
     "is_locomotion_warmstart_checkpoint",
     "sync_locomotion_artifact",
+    "sync_motion_prior_artifact",
 ]

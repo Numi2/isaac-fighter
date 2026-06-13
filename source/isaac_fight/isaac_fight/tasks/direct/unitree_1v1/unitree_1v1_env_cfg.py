@@ -36,6 +36,7 @@ class FighterCfg:
     spawn_forward_speed: float = 0.0
     spawn_forward_speed_noise: float = 0.0
     action_scale: float | None = None
+    action_scale_profile: str = "combat_safety"
     action_smoothing: float = 0.35
     controlled_joint_names: tuple[str, ...] = ()
     strict_joint_names: bool = True
@@ -101,6 +102,49 @@ class PerturbationCfg:
 
 
 @configclass
+class ResidualLocomotionCfg:
+    """Frozen locomotion base plus trainable combat residual action composition."""
+
+    enabled: bool = False
+    checkpoint_path: str = ""
+    base_action_scale: float = 1.0
+    residual_action_scale: float = 0.35
+    active_after_warmup: bool = True
+
+
+@configclass
+class MotionPriorCfg:
+    """Motion-prior bootstrap artifact metadata for AMP/mimic pretraining workflows."""
+
+    enabled: bool = False
+    artifact_path: str = ""
+    kind: str = "unitree_g1_mimic_npz"
+    source_task: str = "Unitree-G1-29dof-Mimic"
+    reward_scale: float = 0.0
+
+
+@configclass
+class AdrCfg:
+    """Gated domain-randomization/PBT ramp after visible stand-and-shove competence."""
+
+    enabled: bool = True
+    start_step: int = 20_000
+    min_history_stance: float = 0.55
+    min_history_support: float = 0.45
+    max_scale: float = 1.0
+
+
+@configclass
+class PbtCfg:
+    """Population-based reward mutation knobs, disabled until stability metrics justify it."""
+
+    enabled: bool = False
+    mutation_scale: float = 0.15
+    mutation_seed: int = 0
+    requires_stability_gate: bool = True
+
+
+@configclass
 class ObservationCfg:
     """Observation normalization settings."""
 
@@ -134,6 +178,8 @@ class CurriculumCfg:
     standing_warmup_s: float = 1.25
     action_hold_s: float = 0.80
     action_ramp_s: float = 0.80
+    fall_recovery_enabled: bool = True
+    fall_recovery_window_s: float = 1.60
     no_engagement_timeout_s: float = 3.0
     no_engagement_grace_s: float = 1.5
     engagement_min_training_contact: float = 0.02
@@ -166,6 +212,9 @@ class RewardScalesCfg:
     leg_extension_posture: float = 1.40
     perturbation_recovery: float = 3.00
     perturbation_collapse: float = 8.00
+    fall_recovery_getup: float = 4.00
+    fall_recovery_stand: float = 5.00
+    fall_recovery_failure: float = 8.00
     airborne_without_attack: float = 4.00
     fall_early: float = 12.00
     recovery_reward: float = 2.40
@@ -272,6 +321,12 @@ class SelfPlayCfg:
     latest_bias: float = 0.35
     side_swap_probability: float = 0.5
     live_self_play_fraction: float = 0.25
+    league_training_enabled: bool = True
+    league_role: str = "main"
+    league_main_weight: float = 0.45
+    league_shove_exploiter_weight: float = 0.25
+    league_body_slam_exploiter_weight: float = 0.15
+    league_balance_breaker_weight: float = 0.15
     promotion_min_proof_impact: float = 1.0e-6
     promotion_bootstrap_count: int = 1
 
@@ -303,6 +358,10 @@ class GhostFighterUnitree1v1EnvCfg(DirectMARLEnvCfg):
     rules: RuleCfg = RuleCfg()
     contact: ContactCfg = ContactCfg()
     perturbations: PerturbationCfg = PerturbationCfg()
+    residual_locomotion: ResidualLocomotionCfg = ResidualLocomotionCfg()
+    motion_prior: MotionPriorCfg = MotionPriorCfg()
+    adr: AdrCfg = AdrCfg()
+    pbt: PbtCfg = PbtCfg()
     observations_cfg: ObservationCfg = ObservationCfg()
     rewards: RewardScalesCfg = RewardScalesCfg()
     curriculum: CurriculumCfg = CurriculumCfg()

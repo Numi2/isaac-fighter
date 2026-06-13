@@ -5,14 +5,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import random
-import hashlib
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 
 @dataclass
@@ -47,6 +47,18 @@ class PolicyVersion:
         uncertainty = 1.0 / math.sqrt(max(self.games, 1))
         return 0.55 * self.loss_rate + 0.25 * uncertainty + 0.20 * (1.0 - abs(0.5 - self.win_rate) * 2.0)
 
+    @property
+    def league_role(self) -> str:
+        role = self.metadata.get("league_role") if isinstance(self.metadata, dict) else None
+        if isinstance(role, str) and role:
+            return role
+        for tag in self.tags:
+            if tag.startswith("role:"):
+                return tag.removeprefix("role:")
+            if tag in {"main", "shove_exploiter", "body_slam_exploiter", "balance_breaker"}:
+                return tag
+        return "main"
+
     def to_json(self) -> dict:
         data = asdict(self)
         data["win_rate"] = self.win_rate
@@ -56,7 +68,7 @@ class PolicyVersion:
         return data
 
     @classmethod
-    def from_json(cls, data: dict) -> "PolicyVersion":
+    def from_json(cls, data: dict) -> PolicyVersion:
         allowed = {field.name for field in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
         cleaned = {key: value for key, value in data.items() if key in allowed}
         if isinstance(cleaned.get("tags"), list):
@@ -168,6 +180,7 @@ class OpponentPool:
         elo_window: float = 250.0,
         weakness_bias: float = 0.65,
         latest_bias: float = 0.15,
+        league_role_weights: dict[str, float] | None = None,
     ) -> OpponentSample | None:
         """Sample a checkpoint using Elo proximity and weakness score.
 
@@ -189,6 +202,8 @@ class OpponentPool:
             weight = (1.0 - weakness_bias - latest_bias) * elo_proximity
             weight += weakness_bias * p.weakness_score
             weight += latest_bias * recency
+            if league_role_weights:
+                weight *= max(float(league_role_weights.get(p.league_role, 0.05)), 0.0)
             weights.append(max(weight, 1.0e-6))
         total = sum(weights)
         r = self.rng.random() * total

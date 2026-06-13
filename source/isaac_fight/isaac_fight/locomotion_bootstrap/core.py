@@ -119,7 +119,9 @@ class WarmstartReport:
             print(f"[INFO] init {item.target} shape={item.shape} reason={item.status}", flush=True)
 
 
-def inspect_rsl_rl_checkpoint(path: str | Path, robot: str | None = None, source_task: str | None = None) -> RslRlCheckpointInfo:
+def inspect_rsl_rl_checkpoint(
+    path: str | Path, robot: str | None = None, source_task: str | None = None
+) -> RslRlCheckpointInfo:
     """Inspect a Unitree rsl_rl checkpoint without importing Isaac Lab or rsl_rl."""
 
     checkpoint_path = Path(path)
@@ -161,7 +163,9 @@ def create_fight_warmstart(
     info = inspect_rsl_rl_checkpoint(source_path, robot=robot, source_task=source_task)
     source_spec = VELOCITY_SPECS[info.robot_name]
     if info.action_dim != source_spec.action_dim:
-        raise ValueError(f"{info.robot_name} expected action_dim={source_spec.action_dim}, source checkpoint has {info.action_dim}")
+        raise ValueError(
+            f"{info.robot_name} expected action_dim={source_spec.action_dim}, source checkpoint has {info.action_dim}"
+        )
 
     fight_agents = _mirror_fight_agents(info.robot_name)
     warmstart: dict[str, Any] = {
@@ -193,8 +197,14 @@ def create_fight_warmstart(
             init_log_std=-1.2,
         )
         value, value_items = _build_skrl_mlp_state(input_dim=obs_dim, output_dim=1, gaussian=False)
-        initialized.extend(TransferItem(target=f"{agent}.policy.{item[0]}", source=None, shape=item[1], status=item[2]) for item in policy_items)
-        initialized.extend(TransferItem(target=f"{agent}.value.{item[0]}", source=None, shape=item[1], status=item[2]) for item in value_items)
+        initialized.extend(
+            TransferItem(target=f"{agent}.policy.{item[0]}", source=None, shape=item[1], status=item[2])
+            for item in policy_items
+        )
+        initialized.extend(
+            TransferItem(target=f"{agent}.value.{item[0]}", source=None, shape=item[1], status=item[2])
+            for item in value_items
+        )
 
         if target_spec.robot_name == info.robot_name:
             moved, skipped = _copy_compatible_layers(
@@ -226,7 +236,9 @@ def create_fight_warmstart(
     return WarmstartReport(
         output_path=str(output),
         robot_name=info.robot_name,
-        fight_agent=",".join(agent for agent, target_spec in fight_agents.items() if target_spec.robot_name == info.robot_name),
+        fight_agent=",".join(
+            agent for agent, target_spec in fight_agents.items() if target_spec.robot_name == info.robot_name
+        ),
         source_checkpoint=str(source_path),
         transferred=tuple(transferred),
         initialized=tuple(item for item in initialized if item.status != "clean_init"),
@@ -284,6 +296,43 @@ def sync_locomotion_artifact(
         "not_opponent": True,
     }
     registry = root_path / "registry.jsonl"
+    with registry.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, sort_keys=True) + "\n")
+    return record
+
+
+def sync_motion_prior_artifact(
+    motion_file: str | Path,
+    root: str | Path = DEFAULT_BOOTSTRAP_ROOT,
+    robot: str = "g1_29dof",
+    source_task: str = "Unitree-G1-29dof-Mimic",
+    kind: str = "unitree_g1_mimic_motion",
+) -> dict[str, Any]:
+    """Copy one AMP/mimic motion-prior artifact into ``locomotion_bootstrap`` and append registry metadata."""
+
+    source = Path(motion_file)
+    if not source.exists():
+        raise FileNotFoundError(source)
+    root_path = Path(root)
+    motion_dir = root_path / "motion_priors"
+    motion_dir.mkdir(parents=True, exist_ok=True)
+    digest = _file_sha1(source)[:12]
+    target = motion_dir / f"{robot}_{digest}_{source.name}"
+    if source.resolve() != target.resolve():
+        shutil.copy2(source, target)
+    record = {
+        "schema": "isaac_fight.motion_prior_artifact.v1",
+        "created_at": time.time(),
+        "kind": kind,
+        "robot": _normalize_robot(robot),
+        "source_task": source_task,
+        "source_path": str(source),
+        "artifact_path": str(target),
+        "source_sha1": _file_sha1(source),
+        "bootstrap_use": "amp_or_mimic_pretraining",
+        "not_opponent": True,
+    }
+    registry = root_path / "motion_priors.jsonl"
     with registry.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, sort_keys=True) + "\n")
     return record
@@ -386,7 +435,11 @@ def _extract_linear_layers(
     role: str,
     include_tensors: bool = False,
 ) -> list[Any]:
-    weight_keys = [key for key, value in state_dict.items() if key.endswith(".weight") and isinstance(value, torch.Tensor) and value.ndim == 2]
+    weight_keys = [
+        key
+        for key, value in state_dict.items()
+        if key.endswith(".weight") and isinstance(value, torch.Tensor) and value.ndim == 2
+    ]
     role_keys = _filter_role_keys(weight_keys, role)
     layers = []
     for key in sorted(role_keys, key=_natural_sort_key):
@@ -469,7 +522,9 @@ def _find_normalizer_shapes(value: Any) -> dict[str, tuple[int, ...]]:
             for key, child in obj.items():
                 key_text = str(key)
                 next_prefix = f"{prefix}.{key_text}" if prefix else key_text
-                if isinstance(child, torch.Tensor) and any(token in next_prefix.lower() for token in ("normal", "obs", "rms")):
+                if isinstance(child, torch.Tensor) and any(
+                    token in next_prefix.lower() for token in ("normal", "obs", "rms")
+                ):
                     if any(token in key_text.lower() for token in ("mean", "var", "variance", "std")):
                         shapes[next_prefix] = tuple(int(dim) for dim in child.shape)
                 elif isinstance(child, dict):
@@ -544,7 +599,11 @@ def _copy_compatible_layers(
                 status="copied",
             )
         )
-        if target_bias_key in target_state and isinstance(source_bias, torch.Tensor) and tuple(source_bias.shape) == tuple(target_state[target_bias_key].shape):
+        if (
+            target_bias_key in target_state
+            and isinstance(source_bias, torch.Tensor)
+            and tuple(source_bias.shape) == tuple(target_state[target_bias_key].shape)
+        ):
             target_state[target_bias_key] = source_bias.detach().float().clone()
             transferred.append(
                 TransferItem(

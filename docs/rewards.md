@@ -11,6 +11,7 @@ Positive terms:
 - `opponent_knockdown`: sparse event reward and small sustained pressure reward.
 - `perturbation_recovery`: reward for staying upright, supported, and inside the capture point after a randomized shove.
 - `one_hand_push_*`: selected-hand reach, contact, balance, and destabilization terms for left/right randomized pushing.
+- `fall_recovery_*`: get-up and stand-back-up terms during the recovery grace window.
 - `stay_inside`: signed boundary-margin reward.
 - `final_win`: terminal win reward.
 

@@ -49,6 +49,20 @@ parser.add_argument("--opponent_update_interval", type=int, default=None)
 parser.add_argument("--side_swap_probability", type=float, default=None)
 parser.add_argument("--live_self_play_fraction", type=float, default=None)
 parser.add_argument(
+    "--league_role",
+    type=str,
+    default="main",
+    choices=["main", "shove_exploiter", "body_slam_exploiter", "balance_breaker"],
+)
+parser.add_argument("--residual_locomotion_checkpoint", type=str, default=None)
+parser.add_argument("--residual_base_action_scale", type=float, default=1.0)
+parser.add_argument("--residual_action_scale", type=float, default=0.35)
+parser.add_argument("--motion_prior_artifact", type=str, default=None)
+parser.add_argument("--motion_prior_reward_scale", type=float, default=0.0)
+parser.add_argument("--enable_pbt", action="store_true", default=False)
+parser.add_argument("--pbt_mutation_seed", type=int, default=0)
+parser.add_argument("--pbt_mutation_scale", type=float, default=0.15)
+parser.add_argument(
     "--launch_preset",
     type=str,
     default="fast_contact_bootstrap",
@@ -101,6 +115,7 @@ from isaac_fight.tasks.direct.unitree_1v1.self_play import (
     SelfPlayTrainingSupervisor,
     checkpoint_dir_from_log_dir,
     maybe_wrap_historical_opponent,
+    maybe_wrap_residual_locomotion,
 )
 
 logger = logging.getLogger(__name__)
@@ -117,7 +132,7 @@ else:
     algorithm = agent_cfg_entry_point.split("_cfg")[0].split("skrl_")[-1].lower()
 
 
-def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa: ANN001
+def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str = "main") -> None:  # noqa: ANN001
     if not hasattr(env_cfg, "fighter_a"):
         return
     refresh_spaces = False
@@ -129,7 +144,7 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.sim.render_interval = env_cfg.decimation
         env_cfg.episode_length_s = 6.5
         env_cfg.arena.radius = 1.65
-        env_cfg.rules.knockout_grace_s = 0.55
+        env_cfg.rules.knockout_grace_s = max(float(env_cfg.rules.knockout_grace_s), 1.35)
         env_cfg.fighter_a.spawn_xy = (-0.50, -0.08)
         env_cfg.fighter_b.spawn_xy = (0.50, 0.08)
         env_cfg.fighter_a.spawn_yaw = 0.08
@@ -142,8 +157,10 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.fighter_b.spawn_forward_speed = 0.0
         env_cfg.fighter_a.spawn_forward_speed_noise = 0.0
         env_cfg.fighter_b.spawn_forward_speed_noise = 0.0
-        env_cfg.fighter_a.action_scale = 0.12
-        env_cfg.fighter_b.action_scale = 0.12
+        env_cfg.fighter_a.action_scale = 0.25
+        env_cfg.fighter_b.action_scale = 0.25
+        env_cfg.fighter_a.action_scale_profile = "unitree_velocity"
+        env_cfg.fighter_b.action_scale_profile = "unitree_velocity"
         env_cfg.fighter_a.action_smoothing = 0.65
         env_cfg.fighter_b.action_smoothing = 0.65
         env_cfg.contact.useful_contact_distance = 1.45
@@ -153,6 +170,8 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.curriculum.standing_warmup_s = max(float(env_cfg.curriculum.standing_warmup_s), 2.25)
         env_cfg.curriculum.action_hold_s = max(float(env_cfg.curriculum.action_hold_s), 1.20)
         env_cfg.curriculum.action_ramp_s = max(float(env_cfg.curriculum.action_ramp_s), 1.10)
+        env_cfg.curriculum.fall_recovery_enabled = True
+        env_cfg.curriculum.fall_recovery_window_s = max(float(env_cfg.curriculum.fall_recovery_window_s), 1.60)
         env_cfg.curriculum.no_engagement_timeout_s = 5.2
         env_cfg.curriculum.no_engagement_grace_s = 3.2
         env_cfg.curriculum.proxy_gain_anneal_steps = min(int(env_cfg.curriculum.proxy_gain_anneal_steps), 20_000)
@@ -167,8 +186,12 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.perturbations.angular_velocity_max = max(float(env_cfg.perturbations.angular_velocity_max), 1.25)
         env_cfg.perturbations.recovery_window_s = max(float(env_cfg.perturbations.recovery_window_s), 1.50)
         env_cfg.observations_cfg.temporal_memory_s = max(float(env_cfg.observations_cfg.temporal_memory_s), 0.55)
+        env_cfg.adr.enabled = True
+        env_cfg.adr.start_step = max(int(env_cfg.adr.start_step), 20_000)
         env_cfg.self_play.opponent_update_interval = min(int(env_cfg.self_play.opponent_update_interval), 160)
         env_cfg.self_play.live_self_play_fraction = max(float(env_cfg.self_play.live_self_play_fraction), 0.45)
+        env_cfg.self_play.league_training_enabled = True
+        env_cfg.self_play.league_role = league_role
         env_cfg.rewards.contact_intent = max(float(env_cfg.rewards.contact_intent), 2.8)
         env_cfg.rewards.standing_height = max(float(env_cfg.rewards.standing_height), 18.0)
         env_cfg.rewards.support_contact = max(float(env_cfg.rewards.support_contact), 9.0)
@@ -189,6 +212,9 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.rewards.leg_extension_posture = max(float(env_cfg.rewards.leg_extension_posture), 8.0)
         env_cfg.rewards.perturbation_recovery = max(float(env_cfg.rewards.perturbation_recovery), 14.0)
         env_cfg.rewards.perturbation_collapse = max(float(env_cfg.rewards.perturbation_collapse), 55.0)
+        env_cfg.rewards.fall_recovery_getup = max(float(env_cfg.rewards.fall_recovery_getup), 18.0)
+        env_cfg.rewards.fall_recovery_stand = max(float(env_cfg.rewards.fall_recovery_stand), 16.0)
+        env_cfg.rewards.fall_recovery_failure = max(float(env_cfg.rewards.fall_recovery_failure), 45.0)
         env_cfg.rewards.airborne_without_attack = max(float(env_cfg.rewards.airborne_without_attack), 24.0)
         env_cfg.rewards.fall_early = max(float(env_cfg.rewards.fall_early), 90.0)
         env_cfg.rewards.recovery_reward = max(float(env_cfg.rewards.recovery_reward), 5.0)
@@ -245,6 +271,7 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.rewards.fall_cause_credit = max(float(env_cfg.rewards.fall_cause_credit), 18.0)
         env_cfg.rewards.energy = min(float(env_cfg.rewards.energy), 0.010)
         env_cfg.rewards.jitter = min(float(env_cfg.rewards.jitter), 0.08)
+        _apply_league_role_reward_bias(env_cfg, league_role)
         env_cfg.diagnostics.reward_terms_interval = max(int(env_cfg.diagnostics.reward_terms_interval), 256)
         agent_cfg["agent"]["rollouts"] = 16
         agent_cfg["agent"]["learning_epochs"] = min(int(agent_cfg["agent"]["learning_epochs"]), 3)
@@ -265,6 +292,49 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         agent_cfg["agent"]["rollouts"] = max(int(agent_cfg["agent"]["rollouts"]), 64)
     if refresh_spaces and hasattr(env_cfg, "__post_init__"):
         env_cfg.__post_init__()
+
+
+def _apply_league_role_reward_bias(env_cfg, league_role: str) -> None:  # noqa: ANN001
+    if league_role == "shove_exploiter":
+        env_cfg.rewards.one_hand_push_contact *= 1.35
+        env_cfg.rewards.one_hand_push_destabilize *= 1.35
+        env_cfg.rewards.opponent_support_break *= 1.25
+        env_cfg.rewards.support_break_pressure *= 1.20
+    elif league_role == "body_slam_exploiter":
+        env_cfg.rewards.torso_charge_reward *= 1.55
+        env_cfg.rewards.drive_pressure *= 1.35
+        env_cfg.rewards.impact_balance *= 1.35
+        env_cfg.rewards.mutual_fall_hard_penalty *= 1.20
+    elif league_role == "balance_breaker":
+        env_cfg.rewards.topple_pressure *= 1.35
+        env_cfg.rewards.opponent_tilt_delta *= 1.35
+        env_cfg.rewards.opponent_support_break *= 1.35
+        env_cfg.rewards.perturbation_recovery *= 1.15
+
+
+def _apply_pbt_reward_mutation(env_cfg, seed: int, mutation_scale: float) -> None:  # noqa: ANN001
+    rng = random.Random(int(seed))
+    names = (
+        "standing_height",
+        "support_contact",
+        "center_of_mass_over_support",
+        "capture_point_support",
+        "foot_support_quality",
+        "perturbation_recovery",
+        "fall_recovery_getup",
+        "fall_recovery_stand",
+        "one_hand_push_contact",
+        "one_hand_push_balance",
+        "one_hand_push_destabilize",
+        "opponent_support_break",
+        "impact_self_destabilization",
+        "mutual_fall_hard_penalty",
+    )
+    scale = max(0.0, float(mutation_scale))
+    for name in names:
+        value = float(getattr(env_cfg.rewards, name))
+        multiplier = math.exp(rng.uniform(-scale, scale))
+        setattr(env_cfg.rewards, name, value * multiplier)
 
 
 def _adapt_checkpoint_observation_space(path: str, env_cfg, algorithm_name: str, log_dir: str) -> str:  # noqa: ANN001
@@ -338,7 +408,21 @@ def _expand_preprocessor(preprocessor, target_dim: int) -> bool:  # noqa: ANN001
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
-    _apply_launch_preset(env_cfg, agent_cfg, args_cli.launch_preset)
+    _apply_launch_preset(env_cfg, agent_cfg, args_cli.launch_preset, args_cli.league_role)
+    if args_cli.residual_locomotion_checkpoint and hasattr(env_cfg, "residual_locomotion"):
+        env_cfg.residual_locomotion.enabled = True
+        env_cfg.residual_locomotion.checkpoint_path = args_cli.residual_locomotion_checkpoint
+        env_cfg.residual_locomotion.base_action_scale = args_cli.residual_base_action_scale
+        env_cfg.residual_locomotion.residual_action_scale = args_cli.residual_action_scale
+    if args_cli.motion_prior_artifact and hasattr(env_cfg, "motion_prior"):
+        env_cfg.motion_prior.enabled = True
+        env_cfg.motion_prior.artifact_path = args_cli.motion_prior_artifact
+        env_cfg.motion_prior.reward_scale = args_cli.motion_prior_reward_scale
+    if args_cli.enable_pbt and hasattr(env_cfg, "pbt"):
+        env_cfg.pbt.enabled = True
+        env_cfg.pbt.mutation_seed = int(args_cli.pbt_mutation_seed)
+        env_cfg.pbt.mutation_scale = float(args_cli.pbt_mutation_scale)
+        _apply_pbt_reward_mutation(env_cfg, args_cli.pbt_mutation_seed, args_cli.pbt_mutation_scale)
     if args_cli.max_iterations:
         agent_cfg["trainer"]["timesteps"] = args_cli.max_iterations * agent_cfg["agent"]["rollouts"]
     if args_cli.self_play and args_cli.snapshot_interval:
@@ -354,6 +438,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.self_play.pool_dir = args_cli.pool_dir
         env_cfg.self_play.snapshot_interval = args_cli.snapshot_interval
         env_cfg.self_play.active_agent = args_cli.active_agent
+        env_cfg.self_play.league_role = args_cli.league_role
         if args_cli.opponent_update_interval is not None:
             env_cfg.self_play.opponent_update_interval = args_cli.opponent_update_interval
         if args_cli.side_swap_probability is not None:
@@ -379,7 +464,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "algorithm": algorithm.upper(),
             "task": args_cli.task,
             "seed": args_cli.seed,
-            "reward_version": "temporal_memory_v15",
+            "reward_version": "residual_amp_league_recovery_adr_v16",
+            "league_role": args_cli.league_role,
             "config_hash": hashlib.sha256(
                 json.dumps(
                     {
@@ -390,6 +476,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         "rewards": vars(env_cfg.rewards),
                         "contact": vars(env_cfg.contact),
                         "perturbations": vars(env_cfg.perturbations),
+                        "residual_locomotion": vars(env_cfg.residual_locomotion),
+                        "motion_prior": vars(env_cfg.motion_prior),
+                        "adr": vars(env_cfg.adr),
+                        "pbt": vars(env_cfg.pbt),
                         "observations": vars(env_cfg.observations_cfg),
                         "self_play": vars(env_cfg.self_play),
                         "curriculum": vars(env_cfg.curriculum),
@@ -426,6 +516,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env.unwrapped, DirectMARLEnv) and algorithm == "ppo":
         env = multi_agent_to_single_agent(env)
 
+    env = maybe_wrap_residual_locomotion(env, env_cfg, args_cli)
     env = maybe_wrap_historical_opponent(env, env_cfg, log_dir, args_cli)
 
     if args_cli.video:

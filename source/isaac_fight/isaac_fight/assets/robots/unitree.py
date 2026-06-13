@@ -102,7 +102,7 @@ _SPECS: dict[str, UnitreeRobotSpec] = {
         torso_body_regex="torso.*|pelvis.*|waist.*",
         foot_body_regex=".*ankle.*|.*foot.*",
         upper_body_regex=".*shoulder.*|.*elbow.*|.*wrist.*|torso.*|waist.*",
-        nominal_action_scale=0.32,
+        nominal_action_scale=0.25,
     ),
     "h1": UnitreeRobotSpec(
         name="h1",
@@ -158,7 +158,9 @@ def get_unitree_robot_spec(name: str) -> UnitreeRobotSpec:
     try:
         return _SPECS[normalized]
     except KeyError as exc:
-        raise KeyError(f"Unsupported Unitree robot '{name}'. Supported names: {', '.join(list_supported_unitree_robots())}") from exc
+        raise KeyError(
+            f"Unsupported Unitree robot '{name}'. Supported names: {', '.join(list_supported_unitree_robots())}"
+        ) from exc
 
 
 def get_unitree_robot_cfg(name: str, prim_path: str | None = None) -> Any:
@@ -189,7 +191,9 @@ def get_unitree_robot_cfg(name: str, prim_path: str | None = None) -> Any:
         cfg = getattr(module, symbol)
         if prim_path is not None:
             if not hasattr(cfg, "replace"):
-                raise RuntimeError(f"Resolved {module_name}.{symbol}, but it does not implement Isaac Lab cfg.replace().")
+                raise RuntimeError(
+                    f"Resolved {module_name}.{symbol}, but it does not implement Isaac Lab cfg.replace()."
+                )
             return cfg.replace(prim_path=prim_path)
         return cfg
 
