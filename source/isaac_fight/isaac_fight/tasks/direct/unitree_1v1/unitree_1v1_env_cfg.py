@@ -174,6 +174,11 @@ class RewardScalesCfg:
     useful_contact: float = 6.00
     stable_contact_attack: float = 3.00
     limb_contact_reward: float = 2.60
+    one_hand_push_setup: float = 1.80
+    one_hand_push_contact: float = 4.00
+    one_hand_push_balance: float = 2.50
+    one_hand_push_destabilize: float = 3.50
+    offhand_push_penalty: float = 1.40
     torso_charge_reward: float = 1.50
     bad_contact_penalty: float = 3.00
     destabilizing_impact: float = 8.00

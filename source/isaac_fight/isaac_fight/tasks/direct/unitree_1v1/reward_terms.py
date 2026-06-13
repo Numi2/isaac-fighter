@@ -132,6 +132,71 @@ class CombatRewardComputer:
             * useful_contact
             * foot_support_quality
         )
+        selected_push_contact = torch.clamp(
+            env._selected_push_contact_force(agent) / env.cfg.contact.force_normalizer,
+            0.0,
+            5.0,
+        )
+        offhand_push_contact = torch.clamp(
+            env._offhand_push_contact_force(agent) / env.cfg.contact.force_normalizer,
+            0.0,
+            5.0,
+        )
+        selected_push_speed = torch.clamp(
+            env._selected_push_speed(agent, opponent, rel_dir) / env.cfg.contact.strike_speed_normalizer,
+            0.0,
+            2.0,
+        )
+        offhand_push_speed = torch.clamp(
+            env._offhand_push_speed(agent, opponent, rel_dir) / env.cfg.contact.strike_speed_normalizer,
+            0.0,
+            2.0,
+        )
+        selected_push_reach = torch.clamp((env._selected_push_reach(agent, rel_dir) - 0.08) / 0.38, 0.0, 1.0)
+        selected_push_action = env._selected_push_arm_action_magnitude(agent)
+        offhand_push_action = env._offhand_push_arm_action_magnitude(agent)
+        push_distance_gate = torch.clamp((1.35 - distance) / 0.90, 0.0, 1.0) * (distance > 0.25).float()
+        push_setup_gate = torch.clamp((distance - 0.35) / 0.55, 0.0, 1.0) * torch.clamp(
+            (1.40 - distance) / 0.55,
+            0.0,
+            1.0,
+        )
+        push_activity = torch.clamp(
+            0.45 * selected_push_reach + 0.35 * selected_push_speed + 0.20 * selected_push_contact,
+            0.0,
+            1.50,
+        )
+        one_hand_push_setup = (
+            selected_push_reach
+            * selected_push_speed
+            * facing_gate
+            * foot_support_quality
+            * action_gate
+            * push_setup_gate
+        )
+        one_hand_push_contact = (
+            selected_push_contact
+            * selected_push_speed
+            * facing_gate
+            * foot_support_quality
+            * combat_gate
+            * push_distance_gate
+        )
+        one_hand_push_balance = (
+            push_activity
+            * foot_support_quality
+            * env._capture_point_support_quality(agent)
+            * upright
+            * (0.25 + 0.75 * action_gate)
+        )
+        one_hand_push_destabilize = one_hand_push_contact * (
+            1.0 + torch.clamp(env._opponent_destabilization[agent], 0.0, 2.0)
+        )
+        offhand_push_penalty = (
+            offhand_push_contact * push_distance_gate
+            + 0.25 * offhand_push_speed * push_setup_gate
+            + 0.20 * torch.relu(offhand_push_action - 0.75 * selected_push_action)
+        ) * combat_gate
         torso_contact = torch.clamp(env._torso_contact_force(agent) / env.cfg.contact.force_normalizer, 0.0, 5.0)
         torso_charge_reward = (
             torso_contact
@@ -259,6 +324,11 @@ class CombatRewardComputer:
             "useful_contact": scales.useful_contact * useful_contact,
             "stable_contact_attack": scales.stable_contact_attack * stable_contact_attack,
             "limb_contact_reward": scales.limb_contact_reward * limb_contact_reward,
+            "one_hand_push_setup": scales.one_hand_push_setup * one_hand_push_setup,
+            "one_hand_push_contact": scales.one_hand_push_contact * one_hand_push_contact,
+            "one_hand_push_balance": scales.one_hand_push_balance * one_hand_push_balance,
+            "one_hand_push_destabilize": scales.one_hand_push_destabilize * one_hand_push_destabilize,
+            "offhand_push_penalty": -scales.offhand_push_penalty * offhand_push_penalty,
             "torso_charge_reward": scales.torso_charge_reward * torso_charge_reward,
             "bad_contact_penalty": -scales.bad_contact_penalty * bad_contact_penalty,
             "destabilizing_impact": scales.destabilizing_impact * destabilizing_impact,

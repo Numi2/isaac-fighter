@@ -52,6 +52,7 @@ STRIKE_BODY_TOKENS = (
     "neck",
 )
 SUPPORT_BODY_TOKENS = ("foot", "ankle", "toe", "sole")
+PUSH_HAND_BODY_TOKENS = ("hand", "wrist", "palm", "finger", "lower_arm", "elbow")
 
 
 class GhostFighterUnitree1v1Env(DirectMARLEnv):
@@ -83,9 +84,13 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._right_support_body_id_tensors: dict[str, torch.Tensor] = {}
         self._upper_contact_body_id_tensors: dict[str, torch.Tensor] = {}
         self._strike_body_id_tensors: dict[str, torch.Tensor] = {}
+        self._left_push_body_id_tensors: dict[str, torch.Tensor] = {}
+        self._right_push_body_id_tensors: dict[str, torch.Tensor] = {}
         self._torso_contact_body_id_tensors: dict[str, torch.Tensor] = {}
         self._waist_action_id_tensors: dict[str, torch.Tensor] = {}
         self._arm_action_id_tensors: dict[str, torch.Tensor] = {}
+        self._left_arm_action_id_tensors: dict[str, torch.Tensor] = {}
+        self._right_arm_action_id_tensors: dict[str, torch.Tensor] = {}
         self._leg_action_id_tensors: dict[str, torch.Tensor] = {}
         self._knee_action_id_tensors: dict[str, torch.Tensor] = {}
         self._hip_yaw_roll_action_id_tensors: dict[str, torch.Tensor] = {}
@@ -219,6 +224,16 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 for idx, name in enumerate(resolved_names)
                 if any(token in name.lower() for token in ("shoulder", "elbow", "wrist", "hand", "finger"))
             ]
+            left_arm_action_ids = [
+                idx
+                for idx in arm_action_ids
+                if "left" in resolved_names[idx].lower() or "_l_" in resolved_names[idx].lower()
+            ]
+            right_arm_action_ids = [
+                idx
+                for idx in arm_action_ids
+                if "right" in resolved_names[idx].lower() or "_r_" in resolved_names[idx].lower()
+            ]
             leg_action_ids = [
                 idx
                 for idx, name in enumerate(resolved_names)
@@ -232,6 +247,16 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             ]
             posture_action_ids = sorted(set(leg_action_ids + waist_action_ids))
             self._arm_action_id_tensors[agent] = torch.as_tensor(arm_action_ids, dtype=torch.long, device=self.device)
+            self._left_arm_action_id_tensors[agent] = torch.as_tensor(
+                left_arm_action_ids or arm_action_ids,
+                dtype=torch.long,
+                device=self.device,
+            )
+            self._right_arm_action_id_tensors[agent] = torch.as_tensor(
+                right_arm_action_ids or arm_action_ids,
+                dtype=torch.long,
+                device=self.device,
+            )
             self._leg_action_id_tensors[agent] = torch.as_tensor(leg_action_ids, dtype=torch.long, device=self.device)
             self._knee_action_id_tensors[agent] = torch.as_tensor(knee_action_ids, dtype=torch.long, device=self.device)
             self._hip_yaw_roll_action_id_tensors[agent] = torch.as_tensor(
@@ -267,6 +292,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         right_support_ids: list[int] = []
         upper_contact_ids: list[int] = []
         strike_ids: list[int] = []
+        left_push_ids: list[int] = []
+        right_push_ids: list[int] = []
         torso_contact_ids: list[int] = []
         for body_id, body_name in enumerate(body_names):
             lower_name = body_name.lower()
@@ -281,6 +308,11 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 upper_contact_ids.append(body_id)
             if any(token in lower_name for token in STRIKE_BODY_TOKENS):
                 strike_ids.append(body_id)
+            if any(token in lower_name for token in PUSH_HAND_BODY_TOKENS):
+                if "left" in lower_name or "_l_" in lower_name:
+                    left_push_ids.append(body_id)
+                if "right" in lower_name or "_r_" in lower_name:
+                    right_push_ids.append(body_id)
             if any(token in lower_name for token in ("pelvis", "base", "torso", "waist", "trunk", "chest")):
                 torso_contact_ids.append(body_id)
 
@@ -304,6 +336,16 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         )
         self._strike_body_id_tensors[agent] = torch.as_tensor(
             strike_ids or all_ids, dtype=torch.long, device=self.device
+        )
+        self._left_push_body_id_tensors[agent] = torch.as_tensor(
+            left_push_ids,
+            dtype=torch.long,
+            device=self.device,
+        )
+        self._right_push_body_id_tensors[agent] = torch.as_tensor(
+            right_push_ids,
+            dtype=torch.long,
+            device=self.device,
         )
         self._torso_contact_body_id_tensors[agent] = torch.as_tensor(
             torso_contact_ids or upper_contact_ids or all_ids,
@@ -366,6 +408,14 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._left_support_air_time = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._right_support_air_time = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._support_step_reward = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._push_hand_command = {
+            agent: torch.where(
+                torch.rand(n, device=device) < 0.5,
+                -torch.ones(n, device=device),
+                torch.ones(n, device=device),
+            )
+            for agent in FIGHTERS
+        }
         self._no_engagement_clock = torch.zeros(n, device=device)
 
         self._winner = torch.zeros(n, dtype=torch.long, device=device)
@@ -633,6 +683,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._left_support_air_time[agent][env_ids] = 0.0
             self._right_support_air_time[agent][env_ids] = 0.0
             self._support_step_reward[agent][env_ids] = 0.0
+            self._randomize_push_hand(env_ids, agent)
             for tensor in self._episode_sums[agent].values():
                 tensor[env_ids] = 0.0
             self._episode_counts[agent][env_ids] = 0.0
@@ -728,6 +779,14 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._prev_root_lin_vel_w[agent] = self.root_lin_vel_w(agent).detach()
             self._prev_up_z[agent] = self._up_z[agent].detach()
             self._prev_support_bias[agent] = self._support_bias(agent).detach()
+
+    def _randomize_push_hand(self, env_ids: torch.Tensor, agent: str) -> None:
+        sampled_left = torch.rand(len(env_ids), device=self.device) < 0.5
+        self._push_hand_command[agent][env_ids] = torch.where(
+            sampled_left,
+            -torch.ones(len(env_ids), device=self.device),
+            torch.ones(len(env_ids), device=self.device),
+        )
 
     def _update_support_air_time(self, agent: str) -> None:
         left, right = self._support_contact_sides(agent)
@@ -1113,6 +1172,99 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
     def _torso_contact_force(self, agent: str) -> torch.Tensor:
         return self._selected_body_contact_force(agent, self._torso_contact_body_id_tensors.get(agent))
 
+    def _push_hand_command_features(self, agent: str) -> tuple[torch.Tensor, torch.Tensor]:
+        command = self._push_hand_command.get(agent)
+        if command is None:
+            zeros = torch.zeros(self.num_envs, device=self.device)
+            return zeros, zeros
+        return (command < 0.0).float(), (command > 0.0).float()
+
+    def _side_push_contact_force(self, agent: str, left_side: bool) -> torch.Tensor:
+        body_ids = (
+            self._left_push_body_id_tensors.get(agent) if left_side else self._right_push_body_id_tensors.get(agent)
+        )
+        return self._selected_body_contact_force(agent, body_ids)
+
+    def _selected_push_contact_force(self, agent: str) -> torch.Tensor:
+        left_active, right_active = self._push_hand_command_features(agent)
+        return left_active * self._side_push_contact_force(agent, True) + right_active * self._side_push_contact_force(
+            agent, False
+        )
+
+    def _offhand_push_contact_force(self, agent: str) -> torch.Tensor:
+        left_active, right_active = self._push_hand_command_features(agent)
+        return right_active * self._side_push_contact_force(agent, True) + left_active * self._side_push_contact_force(
+            agent, False
+        )
+
+    def _side_push_speed(
+        self,
+        agent: str,
+        opponent: str,
+        rel_dir: torch.Tensor,
+        left_side: bool,
+    ) -> torch.Tensor:
+        body_vel = getattr(self.robots[agent].data, "body_lin_vel_w", None)
+        if body_vel is None:
+            return torch.relu(torch.sum((self.root_lin_vel_w(agent) - self.root_lin_vel_w(opponent)) * rel_dir, dim=-1))
+        body_ids = (
+            self._left_push_body_id_tensors.get(agent) if left_side else self._right_push_body_id_tensors.get(agent)
+        )
+        if body_ids is None or body_ids.numel() == 0:
+            return torch.zeros(self.num_envs, device=self.device)
+        rel_body_vel = body_vel.index_select(1, body_ids) - self.root_lin_vel_w(opponent).unsqueeze(1)
+        return torch.relu(torch.sum(rel_body_vel * rel_dir.unsqueeze(1), dim=-1)).amax(dim=-1)
+
+    def _selected_push_speed(self, agent: str, opponent: str, rel_dir: torch.Tensor) -> torch.Tensor:
+        left_active, right_active = self._push_hand_command_features(agent)
+        return left_active * self._side_push_speed(
+            agent, opponent, rel_dir, True
+        ) + right_active * self._side_push_speed(agent, opponent, rel_dir, False)
+
+    def _offhand_push_speed(self, agent: str, opponent: str, rel_dir: torch.Tensor) -> torch.Tensor:
+        left_active, right_active = self._push_hand_command_features(agent)
+        return right_active * self._side_push_speed(
+            agent, opponent, rel_dir, True
+        ) + left_active * self._side_push_speed(agent, opponent, rel_dir, False)
+
+    def _side_push_reach(self, agent: str, rel_dir: torch.Tensor, left_side: bool) -> torch.Tensor:
+        body_pos_w = getattr(self.robots[agent].data, "body_pos_w", None)
+        if body_pos_w is None:
+            return torch.zeros(self.num_envs, device=self.device)
+        body_ids = (
+            self._left_push_body_id_tensors.get(agent) if left_side else self._right_push_body_id_tensors.get(agent)
+        )
+        if body_ids is None or body_ids.numel() == 0:
+            return torch.zeros(self.num_envs, device=self.device)
+        hand_offset = body_pos_w.index_select(1, body_ids)[:, :, :2] - self.root_pos_w(agent)[:, :2].unsqueeze(1)
+        return torch.sum(hand_offset * rel_dir[:, :2].unsqueeze(1), dim=-1).amax(dim=-1)
+
+    def _selected_push_reach(self, agent: str, rel_dir: torch.Tensor) -> torch.Tensor:
+        left_active, right_active = self._push_hand_command_features(agent)
+        return left_active * self._side_push_reach(agent, rel_dir, True) + right_active * self._side_push_reach(
+            agent, rel_dir, False
+        )
+
+    def _side_arm_action_magnitude(self, agent: str, left_side: bool) -> torch.Tensor:
+        action_ids = (
+            self._left_arm_action_id_tensors.get(agent) if left_side else self._right_arm_action_id_tensors.get(agent)
+        )
+        if action_ids is None or action_ids.numel() == 0:
+            return torch.zeros(self.num_envs, device=self.device)
+        return torch.mean(torch.square(self._actions[agent].index_select(1, action_ids)), dim=-1)
+
+    def _selected_push_arm_action_magnitude(self, agent: str) -> torch.Tensor:
+        left_active, right_active = self._push_hand_command_features(agent)
+        return left_active * self._side_arm_action_magnitude(
+            agent, True
+        ) + right_active * self._side_arm_action_magnitude(agent, False)
+
+    def _offhand_push_arm_action_magnitude(self, agent: str) -> torch.Tensor:
+        left_active, right_active = self._push_hand_command_features(agent)
+        return right_active * self._side_arm_action_magnitude(
+            agent, True
+        ) + left_active * self._side_arm_action_magnitude(agent, False)
+
     def _support_bias(self, agent: str) -> torch.Tensor:
         left = self._selected_body_contact_force(agent, self._left_support_body_id_tensors.get(agent))
         right = self._selected_body_contact_force(agent, self._right_support_body_id_tensors.get(agent))
@@ -1210,6 +1362,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         warmup_s = max(float(self.cfg.curriculum.standing_warmup_s), 1.0e-6)
         warmup_progress = torch.clamp(episode_time / warmup_s, 0.0, 1.0)
         left, right = self._support_contact_sides(agent)
+        push_left, push_right = self._push_hand_command_features(agent)
+        rel = self.root_pos(opponent) - self.root_pos(agent)
+        rel_dir = normalize(torch.cat((rel[:, :2], torch.zeros_like(rel[:, 2:3])), dim=-1))
         return torch.stack(
             (
                 torch.clamp(self._stance_quality(agent), 0.0, 1.0),
@@ -1222,6 +1377,15 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 torch.abs(left - right),
                 torch.clamp(self._capture_point_support_quality(agent), 0.0, 1.0),
                 warmup_progress,
+                push_left,
+                push_right,
+                torch.clamp(self._selected_push_contact_force(agent) / self.cfg.contact.force_normalizer, 0.0, 5.0),
+                torch.clamp(
+                    self._selected_push_speed(agent, opponent, rel_dir) / self.cfg.contact.strike_speed_normalizer,
+                    0.0,
+                    5.0,
+                ),
+                torch.clamp(self._offhand_push_contact_force(agent) / self.cfg.contact.force_normalizer, 0.0, 5.0),
             ),
             dim=-1,
         )

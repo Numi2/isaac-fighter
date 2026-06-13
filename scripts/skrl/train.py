@@ -199,6 +199,11 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.rewards.attack_momentum = max(float(env_cfg.rewards.attack_momentum), 3.4)
         env_cfg.rewards.stable_contact_attack = max(float(env_cfg.rewards.stable_contact_attack), 5.0)
         env_cfg.rewards.limb_contact_reward = max(float(env_cfg.rewards.limb_contact_reward), 4.0)
+        env_cfg.rewards.one_hand_push_setup = max(float(env_cfg.rewards.one_hand_push_setup), 5.0)
+        env_cfg.rewards.one_hand_push_contact = max(float(env_cfg.rewards.one_hand_push_contact), 9.0)
+        env_cfg.rewards.one_hand_push_balance = max(float(env_cfg.rewards.one_hand_push_balance), 8.0)
+        env_cfg.rewards.one_hand_push_destabilize = max(float(env_cfg.rewards.one_hand_push_destabilize), 8.0)
+        env_cfg.rewards.offhand_push_penalty = max(float(env_cfg.rewards.offhand_push_penalty), 4.5)
         env_cfg.rewards.torso_charge_reward = max(float(env_cfg.rewards.torso_charge_reward), 2.5)
         env_cfg.rewards.bad_contact_penalty = max(float(env_cfg.rewards.bad_contact_penalty), 8.0)
         env_cfg.rewards.drive_pressure = max(float(env_cfg.rewards.drive_pressure), 6.2)
@@ -362,7 +367,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "algorithm": algorithm.upper(),
             "task": args_cli.task,
             "seed": args_cli.seed,
-            "reward_version": "standing_locomotion_fight_v12",
+            "reward_version": "one_hand_push_balance_v13",
             "config_hash": hashlib.sha256(
                 json.dumps(
                     {
