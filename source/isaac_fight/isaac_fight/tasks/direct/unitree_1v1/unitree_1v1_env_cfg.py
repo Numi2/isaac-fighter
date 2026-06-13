@@ -104,6 +104,7 @@ class PerturbationCfg:
 class ObservationCfg:
     """Observation normalization settings."""
 
+    temporal_memory_s: float = 0.45
     base_linear_velocity_scale: float = 0.5
     base_angular_velocity_scale: float = 0.2
     relative_position_normalizer: float = 3.5

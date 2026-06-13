@@ -30,3 +30,9 @@ Penalty terms:
 - `final_draw`
 
 The weights are in `RewardScalesCfg` and can be replaced without changing environment mechanics.
+
+Observation shaping:
+
+- The policy receives compact temporal EMAs for stance, support, useful contact, proof impact, opponent
+  destabilization, perturbation recovery, fall pressure, and selected-hand push activity. This gives feed-forward IPPO a
+  short memory of contact/recovery context without requiring a recurrent policy.

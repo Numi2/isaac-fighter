@@ -390,6 +390,14 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._proof_impact = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._proof_destabilization = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._recent_attack_pressure = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._history_stance_quality = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._history_support_quality = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._history_useful_contact = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._history_proof_impact = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._history_opponent_destabilization = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._history_perturbation_active = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._history_fall_pressure = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._history_push_activity = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._energy = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._energy_ema = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._torque_penalty = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
@@ -678,6 +686,14 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._proof_impact[agent][env_ids] = 0.0
             self._proof_destabilization[agent][env_ids] = 0.0
             self._recent_attack_pressure[agent][env_ids] = 0.0
+            self._history_stance_quality[agent][env_ids] = 0.0
+            self._history_support_quality[agent][env_ids] = 0.0
+            self._history_useful_contact[agent][env_ids] = 0.0
+            self._history_proof_impact[agent][env_ids] = 0.0
+            self._history_opponent_destabilization[agent][env_ids] = 0.0
+            self._history_perturbation_active[agent][env_ids] = 0.0
+            self._history_fall_pressure[agent][env_ids] = 0.0
+            self._history_push_activity[agent][env_ids] = 0.0
             self._posture_instability[agent][env_ids] = 0.0
             self._energy[agent][env_ids] = 0.0
             self._energy_ema[agent][env_ids] = 0.0
@@ -724,6 +740,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             opponent = opponent_of(agent)
             self._update_contact_and_effort(agent, opponent)
             if advance:
+                self._update_temporal_memory(agent, opponent)
                 self._knockdown_clock[agent] = torch.where(
                     self._knockdown[agent],
                     self._knockdown_clock[agent] + self.step_dt,
@@ -899,6 +916,21 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 active.unsqueeze(-1),
                 self._perturbation_elapsed_fraction(agent).unsqueeze(-1),
                 impulse_xy,
+            ),
+            dim=-1,
+        )
+
+    def _temporal_memory_features(self, agent: str) -> torch.Tensor:
+        return torch.stack(
+            (
+                torch.clamp(self._history_stance_quality[agent], 0.0, 1.0),
+                torch.clamp(self._history_support_quality[agent], 0.0, 1.0),
+                torch.clamp(self._history_useful_contact[agent], 0.0, 1.0),
+                torch.clamp(self._history_proof_impact[agent], 0.0, 1.0),
+                torch.clamp(self._history_opponent_destabilization[agent], 0.0, 1.0),
+                torch.clamp(self._history_perturbation_active[agent], 0.0, 1.0),
+                torch.clamp(self._history_fall_pressure[agent], 0.0, 1.0),
+                torch.clamp(self._history_push_activity[agent], 0.0, 1.0),
             ),
             dim=-1,
         )
@@ -1097,6 +1129,52 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             return
         decay = math.exp(-float(self.step_dt) / max(memory_s, 1.0e-6))
         self._recent_attack_pressure[agent] = torch.maximum(self._recent_attack_pressure[agent] * decay, current)
+
+    def _update_temporal_memory(self, agent: str, opponent: str) -> None:
+        memory_s = max(float(self.cfg.observations_cfg.temporal_memory_s), 1.0e-6)
+        alpha = 1.0 - math.exp(-float(self.step_dt) / memory_s)
+        support_quality = torch.clamp(self._support_quality(agent), 0.0, 1.0)
+        stance_quality = torch.clamp(self._stance_quality(agent), 0.0, 1.0)
+        useful_contact = torch.clamp(self._useful_contact[agent], 0.0, 5.0) / 5.0
+        proof_impact = torch.clamp(self._proof_impact[agent], 0.0, 5.0) / 5.0
+        opponent_destabilization = torch.clamp(self._opponent_destabilization[agent], 0.0, 5.0) / 5.0
+        perturbation_active = self._perturbation_active(agent)
+        height_ratio = self.root_pos(agent)[:, 2] / max(self._runtime[agent].default_base_height, 1.0e-6)
+        fall_pressure = (
+            torch.clamp(
+                (1.0 - self._up_z[agent])
+                + torch.relu(0.90 - height_ratio)
+                + self._fallen[agent].float()
+                + self._knockdown[agent].float(),
+                0.0,
+                3.0,
+            )
+            / 3.0
+        )
+        rel = self.root_pos(opponent) - self.root_pos(agent)
+        rel_dir = normalize(torch.cat((rel[:, :2], torch.zeros_like(rel[:, 2:3])), dim=-1))
+        push_contact = torch.clamp(
+            self._selected_push_contact_force(agent) / self.cfg.contact.force_normalizer, 0.0, 5.0
+        )
+        push_speed = torch.clamp(
+            self._selected_push_speed(agent, opponent, rel_dir) / self.cfg.contact.strike_speed_normalizer,
+            0.0,
+            2.0,
+        )
+        push_activity = torch.clamp(0.10 * push_contact + 0.25 * push_speed, 0.0, 1.0)
+
+        updates = (
+            (self._history_stance_quality, stance_quality),
+            (self._history_support_quality, support_quality),
+            (self._history_useful_contact, useful_contact),
+            (self._history_proof_impact, proof_impact),
+            (self._history_opponent_destabilization, opponent_destabilization),
+            (self._history_perturbation_active, perturbation_active),
+            (self._history_fall_pressure, fall_pressure),
+            (self._history_push_activity, push_activity),
+        )
+        for buffer, value in updates:
+            buffer[agent].mul_(1.0 - alpha).add_(alpha * value)
 
     def _clean_attack_credit(self, agent: str, opponent: str) -> torch.Tensor:
         attack = torch.maximum(self._proof_impact[agent], self._recent_attack_pressure[agent])
@@ -1504,7 +1582,14 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             ),
             dim=-1,
         )
-        return torch.cat((combat_features, self._perturbation_observation_features(agent)), dim=-1)
+        return torch.cat(
+            (
+                combat_features,
+                self._perturbation_observation_features(agent),
+                self._temporal_memory_features(agent),
+            ),
+            dim=-1,
+        )
 
     def _knee_collapse(self, agent: str) -> torch.Tensor:
         knee_ids = self._knee_action_id_tensors.get(agent)

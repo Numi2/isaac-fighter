@@ -166,6 +166,7 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str) -> None:  # noqa
         env_cfg.perturbations.angular_velocity_min = max(float(env_cfg.perturbations.angular_velocity_min), 0.25)
         env_cfg.perturbations.angular_velocity_max = max(float(env_cfg.perturbations.angular_velocity_max), 1.25)
         env_cfg.perturbations.recovery_window_s = max(float(env_cfg.perturbations.recovery_window_s), 1.50)
+        env_cfg.observations_cfg.temporal_memory_s = max(float(env_cfg.observations_cfg.temporal_memory_s), 0.55)
         env_cfg.self_play.opponent_update_interval = min(int(env_cfg.self_play.opponent_update_interval), 160)
         env_cfg.self_play.live_self_play_fraction = max(float(env_cfg.self_play.live_self_play_fraction), 0.45)
         env_cfg.rewards.contact_intent = max(float(env_cfg.rewards.contact_intent), 2.8)
@@ -378,7 +379,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "algorithm": algorithm.upper(),
             "task": args_cli.task,
             "seed": args_cli.seed,
-            "reward_version": "perturbation_recovery_v14",
+            "reward_version": "temporal_memory_v15",
             "config_hash": hashlib.sha256(
                 json.dumps(
                     {
@@ -389,6 +390,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         "rewards": vars(env_cfg.rewards),
                         "contact": vars(env_cfg.contact),
                         "perturbations": vars(env_cfg.perturbations),
+                        "observations": vars(env_cfg.observations_cfg),
                         "self_play": vars(env_cfg.self_play),
                         "curriculum": vars(env_cfg.curriculum),
                         "diagnostics": vars(env_cfg.diagnostics),
