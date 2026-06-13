@@ -23,6 +23,7 @@ logs/
 runs/
 recordings/
 replays/
+tmp_screenshots/
 checkpoints/
 policy_pool/
 /locomotion_bootstrap/
