@@ -63,6 +63,15 @@ class CombatRewardComputer:
         angular_stumble = torch.clamp(lateral_ang_vel / 4.0, 0.0, 3.0)
         knee_collapse = env._knee_collapse(agent)
         leg_extension_posture = env._leg_posture_quality(agent) * foot_support_quality
+        perturb_active = env._perturbation_active(agent)
+        perturbation_recovery = perturb_active * balance_recovery * foot_support_quality * capture_point_support
+        perturbation_collapse = perturb_active * (
+            low_base_height
+            + 0.75 * torch.relu(1.0 - upright)
+            + 0.35 * angular_stumble
+            + knee_collapse
+            + 2.0 * env._new_fall[agent].float()
+        )
         recovery_reward = torch.relu(up_z - env._prev_up_z[agent]) * support_quality * (~env._fallen[agent]).float()
         backward_motion = torch.relu(-root_lin_vel_b[:, 0]) * (0.35 + 0.65 * upright)
         backward_lean = torch.relu(projected_gravity_b[:, 0] - 0.08) * (0.5 + 0.5 * upright)
@@ -298,6 +307,8 @@ class CombatRewardComputer:
             "angular_stumble": -scales.angular_stumble * angular_stumble,
             "knee_collapse": -scales.knee_collapse * knee_collapse,
             "leg_extension_posture": scales.leg_extension_posture * leg_extension_posture,
+            "perturbation_recovery": scales.perturbation_recovery * perturbation_recovery,
+            "perturbation_collapse": -scales.perturbation_collapse * perturbation_collapse,
             "airborne_without_attack": -scales.airborne_without_attack * airborne_without_attack,
             "fall_early": -scales.fall_early * fall_early,
             "recovery_reward": scales.recovery_reward * recovery_reward,

@@ -9,7 +9,7 @@ import torch
 
 from isaac_fight.utils.torch_math import heading_error_to_target, rotate_yaw_inverse
 
-BASE_FEATURE_DIM = 52
+BASE_FEATURE_DIM = 56
 OPPONENT_KEYPOINTS = 7
 KEYPOINT_FEATURE_DIM = OPPONENT_KEYPOINTS * 6
 

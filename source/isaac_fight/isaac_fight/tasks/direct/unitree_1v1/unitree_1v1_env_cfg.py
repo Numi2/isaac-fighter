@@ -86,6 +86,21 @@ class ContactCfg:
 
 
 @configclass
+class PerturbationCfg:
+    """Adversarial balance perturbations for standing and early-contact competence."""
+
+    enabled: bool = True
+    probability: float = 0.70
+    time_min_s: float = 0.45
+    time_max_s: float = 2.35
+    linear_velocity_min: float = 0.20
+    linear_velocity_max: float = 0.75
+    angular_velocity_min: float = 0.15
+    angular_velocity_max: float = 1.10
+    recovery_window_s: float = 1.40
+
+
+@configclass
 class ObservationCfg:
     """Observation normalization settings."""
 
@@ -148,6 +163,8 @@ class RewardScalesCfg:
     angular_stumble: float = 1.80
     knee_collapse: float = 2.40
     leg_extension_posture: float = 1.40
+    perturbation_recovery: float = 3.00
+    perturbation_collapse: float = 8.00
     airborne_without_attack: float = 4.00
     fall_early: float = 12.00
     recovery_reward: float = 2.40
@@ -284,6 +301,7 @@ class GhostFighterUnitree1v1EnvCfg(DirectMARLEnvCfg):
     arena: ArenaCfg = ArenaCfg()
     rules: RuleCfg = RuleCfg()
     contact: ContactCfg = ContactCfg()
+    perturbations: PerturbationCfg = PerturbationCfg()
     observations_cfg: ObservationCfg = ObservationCfg()
     rewards: RewardScalesCfg = RewardScalesCfg()
     curriculum: CurriculumCfg = CurriculumCfg()

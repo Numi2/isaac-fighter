@@ -23,7 +23,7 @@ from isaac_fight.assets.robots.unitree import (
     get_unitree_robot_cfg,
     get_unitree_robot_spec,
 )
-from isaac_fight.utils.torch_math import normalize, quat_apply_inverse, quat_from_yaw, yaw_from_quat
+from isaac_fight.utils.torch_math import normalize, quat_apply_inverse, quat_from_yaw, rotate_yaw_inverse, yaw_from_quat
 
 from .fight_common import FighterRuntimeInfo
 from .fight_rules import FightRuleEngine
@@ -408,6 +408,12 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._left_support_air_time = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._right_support_air_time = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._support_step_reward = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._perturb_time = {agent: torch.full((n,), float("inf"), device=device) for agent in FIGHTERS}
+        self._perturb_linear_velocity = {agent: torch.zeros(n, 3, device=device) for agent in FIGHTERS}
+        self._perturb_angular_velocity = {agent: torch.zeros(n, 3, device=device) for agent in FIGHTERS}
+        self._perturb_applied = {agent: torch.zeros(n, dtype=torch.bool, device=device) for agent in FIGHTERS}
+        self._perturb_recovery_clock = {agent: torch.full((n,), 1.0e6, device=device) for agent in FIGHTERS}
+        self._new_perturbation_event = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._push_hand_command = {
             agent: torch.where(
                 torch.rand(n, device=device) < 0.5,
@@ -463,6 +469,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             smoothing = float(fighter_cfgs[agent].action_smoothing)
             self._actions[agent].mul_(smoothing).add_(raw * (1.0 - smoothing))
             self._joint_targets[agent] = self._compute_joint_targets(agent)
+        self._apply_scheduled_perturbations()
 
     def _apply_action(self) -> None:
         for agent, robot in self.robots.items():
@@ -556,6 +563,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             "combat_proof_contact": self._proof_contact[agent],
             "combat_proof_impact": self._proof_impact[agent],
             "combat_recent_attack_pressure": self._recent_attack_pressure[agent],
+            "combat_perturbation_active": self._perturbation_active(agent),
+            "combat_perturbation_events": self._new_perturbation_event[agent],
             "combat_opponent_fall_events": opponent_fall,
             "combat_proof_opponent_fall_events": opponent_fall * proof_gate,
             "combat_clean_opponent_fall_events": opponent_fall * clean_attack,
@@ -684,6 +693,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._right_support_air_time[agent][env_ids] = 0.0
             self._support_step_reward[agent][env_ids] = 0.0
             self._randomize_push_hand(env_ids, agent)
+            self._sample_perturbation(env_ids, agent)
             for tensor in self._episode_sums[agent].values():
                 tensor[env_ids] = 0.0
             self._episode_counts[agent][env_ids] = 0.0
@@ -745,6 +755,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 )
         if advance:
             self._update_engagement_clock()
+            self._advance_perturbation_clocks()
 
         if not advance:
             self._commit_history(only_if_uninitialized=True)
@@ -786,6 +797,110 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             sampled_left,
             -torch.ones(len(env_ids), device=self.device),
             torch.ones(len(env_ids), device=self.device),
+        )
+
+    def _sample_perturbation(self, env_ids: torch.Tensor, agent: str) -> None:
+        cfg = self.cfg.perturbations
+        count = len(env_ids)
+        self._perturb_applied[agent][env_ids] = False
+        self._perturb_recovery_clock[agent][env_ids] = float(cfg.recovery_window_s) + 1.0
+        self._new_perturbation_event[agent][env_ids] = 0.0
+        self._perturb_linear_velocity[agent][env_ids] = 0.0
+        self._perturb_angular_velocity[agent][env_ids] = 0.0
+        if not cfg.enabled or count == 0:
+            self._perturb_time[agent][env_ids] = float("inf")
+            return
+
+        active = torch.rand(count, device=self.device) < max(0.0, min(1.0, float(cfg.probability)))
+        time_min = max(0.0, float(cfg.time_min_s))
+        time_max = max(time_min, float(cfg.time_max_s))
+        perturb_time = time_min + (time_max - time_min) * torch.rand(count, device=self.device)
+        self._perturb_time[agent][env_ids] = torch.where(
+            active,
+            perturb_time,
+            torch.full((count,), float("inf"), device=self.device),
+        )
+
+        angle = 2.0 * math.pi * torch.rand(count, device=self.device)
+        direction = torch.stack((torch.cos(angle), torch.sin(angle), torch.zeros_like(angle)), dim=-1)
+        linear_min = max(0.0, float(cfg.linear_velocity_min))
+        linear_max = max(linear_min, float(cfg.linear_velocity_max))
+        linear_mag = linear_min + (linear_max - linear_min) * torch.rand(count, device=self.device)
+        linear_delta = direction * linear_mag.unsqueeze(-1) * active.unsqueeze(-1)
+        self._perturb_linear_velocity[agent][env_ids] = linear_delta
+
+        angular_min = max(0.0, float(cfg.angular_velocity_min))
+        angular_max = max(angular_min, float(cfg.angular_velocity_max))
+        angular_mag = angular_min + (angular_max - angular_min) * torch.rand(count, device=self.device)
+        angular_sign = torch.where(
+            torch.rand(count, device=self.device) < 0.5,
+            -torch.ones(count, device=self.device),
+            torch.ones(count, device=self.device),
+        )
+        angular_delta = torch.zeros(count, 3, device=self.device)
+        # Roll/pitch velocity is what knocks weak policies off balance; yaw-only spins are too easy to ignore.
+        angular_delta[:, 0] = angular_sign * angular_mag * torch.sin(angle) * active
+        angular_delta[:, 1] = -angular_sign * angular_mag * torch.cos(angle) * active
+        self._perturb_angular_velocity[agent][env_ids] = angular_delta
+
+    def _apply_scheduled_perturbations(self) -> None:
+        if not getattr(self.cfg, "perturbations", None) or not self.cfg.perturbations.enabled:
+            return
+        episode_time = self.episode_length_buf.float() * self.step_dt
+        for agent in FIGHTERS:
+            self._new_perturbation_event[agent].zero_()
+            due = (~self._perturb_applied[agent]) & (episode_time >= self._perturb_time[agent])
+            if not bool(due.any().item()):
+                continue
+            env_ids = due.nonzero(as_tuple=False).squeeze(-1)
+            velocity = self._root_velocity_state_w(agent).index_select(0, env_ids).clone()
+            velocity[:, :3] += self._perturb_linear_velocity[agent].index_select(0, env_ids)
+            velocity[:, 3:6] += self._perturb_angular_velocity[agent].index_select(0, env_ids)
+            self.robots[agent].write_root_velocity_to_sim(velocity, env_ids)
+            self._perturb_applied[agent][env_ids] = True
+            self._perturb_recovery_clock[agent][env_ids] = 0.0
+            self._new_perturbation_event[agent][env_ids] = 1.0
+
+    def _root_velocity_state_w(self, agent: str) -> torch.Tensor:
+        data = self.robots[agent].data
+        if hasattr(data, "root_state_w"):
+            return data.root_state_w[:, 7:13]
+        lin_vel = self.root_lin_vel_w(agent)
+        ang_vel = getattr(data, "root_ang_vel_w", None)
+        if ang_vel is None:
+            ang_vel = torch.zeros_like(lin_vel)
+        return torch.cat((lin_vel, ang_vel), dim=-1)
+
+    def _advance_perturbation_clocks(self) -> None:
+        window = float(self.cfg.perturbations.recovery_window_s)
+        for agent in FIGHTERS:
+            self._perturb_recovery_clock[agent] = torch.clamp(
+                self._perturb_recovery_clock[agent] + self.step_dt,
+                0.0,
+                window + 1.0,
+            )
+
+    def _perturbation_active(self, agent: str) -> torch.Tensor:
+        if not getattr(self.cfg, "perturbations", None) or not self.cfg.perturbations.enabled:
+            return torch.zeros(self.num_envs, device=self.device)
+        return (self._perturb_recovery_clock[agent] <= float(self.cfg.perturbations.recovery_window_s)).float()
+
+    def _perturbation_elapsed_fraction(self, agent: str) -> torch.Tensor:
+        window = max(float(self.cfg.perturbations.recovery_window_s), 1.0e-6)
+        return self._perturbation_active(agent) * torch.clamp(self._perturb_recovery_clock[agent] / window, 0.0, 1.0)
+
+    def _perturbation_observation_features(self, agent: str) -> torch.Tensor:
+        active = self._perturbation_active(agent)
+        max_speed = max(float(self.cfg.perturbations.linear_velocity_max), 1.0e-6)
+        impulse_b = rotate_yaw_inverse(self.root_quat(agent), self._perturb_linear_velocity[agent])
+        impulse_xy = torch.clamp(impulse_b[:, :2] / max_speed, -2.0, 2.0) * active.unsqueeze(-1)
+        return torch.cat(
+            (
+                active.unsqueeze(-1),
+                self._perturbation_elapsed_fraction(agent).unsqueeze(-1),
+                impulse_xy,
+            ),
+            dim=-1,
         )
 
     def _update_support_air_time(self, agent: str) -> None:
@@ -1365,7 +1480,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         push_left, push_right = self._push_hand_command_features(agent)
         rel = self.root_pos(opponent) - self.root_pos(agent)
         rel_dir = normalize(torch.cat((rel[:, :2], torch.zeros_like(rel[:, 2:3])), dim=-1))
-        return torch.stack(
+        combat_features = torch.stack(
             (
                 torch.clamp(self._stance_quality(agent), 0.0, 1.0),
                 torch.clamp(self._combat_ready(agent), 0.0, 1.0),
@@ -1389,6 +1504,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             ),
             dim=-1,
         )
+        return torch.cat((combat_features, self._perturbation_observation_features(agent)), dim=-1)
 
     def _knee_collapse(self, agent: str) -> torch.Tensor:
         knee_ids = self._knee_action_id_tensors.get(agent)
@@ -1465,6 +1581,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             "proof_impact": 0.0,
             "proof_destabilization": 0.0,
             "recent_attack_pressure": 0.0,
+            "perturbation_active": 0.0,
+            "perturbation_events": 0.0,
             "opponent_fall_events": 0.0,
             "proof_opponent_fall_events": 0.0,
             "clean_opponent_fall_events": 0.0,
