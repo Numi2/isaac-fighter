@@ -55,7 +55,15 @@ class PolicyVersion:
         for tag in self.tags:
             if tag.startswith("role:"):
                 return tag.removeprefix("role:")
-            if tag in {"main", "shove_exploiter", "body_slam_exploiter", "balance_breaker"}:
+            if tag in {
+                "main",
+                "shove_exploiter",
+                "body_slam_exploiter",
+                "balance_breaker",
+                "recovery_specialist",
+                "brace_defender",
+                "leg_kick_exploiter",
+            }:
                 return tag
         return "main"
 
@@ -181,6 +189,8 @@ class OpponentPool:
         weakness_bias: float = 0.65,
         latest_bias: float = 0.15,
         league_role_weights: dict[str, float] | None = None,
+        pfsp_hard_bias: float = 0.0,
+        role_exploration: float = 0.05,
     ) -> OpponentSample | None:
         """Sample a checkpoint using Elo proximity and weakness score.
 
@@ -195,6 +205,8 @@ class OpponentPool:
         if not filtered:
             filtered = policies
         max_version = max(p.version for p in policies)
+        role_totals = league_role_weights or {}
+        role_exploration = max(0.0, float(role_exploration))
         weights = []
         for p in filtered:
             elo_proximity = math.exp(-abs(p.elo - active_elo) / max(elo_window, 1.0))
@@ -202,8 +214,11 @@ class OpponentPool:
             weight = (1.0 - weakness_bias - latest_bias) * elo_proximity
             weight += weakness_bias * p.weakness_score
             weight += latest_bias * recency
-            if league_role_weights:
-                weight *= max(float(league_role_weights.get(p.league_role, 0.05)), 0.0)
+            if role_totals:
+                weight *= role_exploration + max(float(role_totals.get(p.league_role, 0.0)), 0.0)
+            if pfsp_hard_bias > 0.0:
+                hard_opponent = (1.0 - p.win_rate) ** 2 if p.games else 0.65
+                weight = (1.0 - pfsp_hard_bias) * weight + pfsp_hard_bias * max(hard_opponent, 1.0e-6)
             weights.append(max(weight, 1.0e-6))
         total = sum(weights)
         r = self.rng.random() * total

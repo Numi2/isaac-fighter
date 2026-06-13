@@ -52,7 +52,15 @@ parser.add_argument(
     "--league_role",
     type=str,
     default="main",
-    choices=["main", "shove_exploiter", "body_slam_exploiter", "balance_breaker"],
+    choices=[
+        "main",
+        "shove_exploiter",
+        "body_slam_exploiter",
+        "balance_breaker",
+        "recovery_specialist",
+        "brace_defender",
+        "leg_kick_exploiter",
+    ],
 )
 parser.add_argument("--residual_locomotion_checkpoint", type=str, default=None)
 parser.add_argument("--residual_base_action_scale", type=float, default=1.0)
@@ -176,6 +184,17 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
         env_cfg.curriculum.no_engagement_grace_s = 3.2
         env_cfg.curriculum.proxy_gain_anneal_steps = min(int(env_cfg.curriculum.proxy_gain_anneal_steps), 20_000)
         env_cfg.curriculum.min_proxy_gain = max(float(env_cfg.curriculum.min_proxy_gain), 0.20)
+        env_cfg.curriculum.stand_phase_steps = min(int(env_cfg.curriculum.stand_phase_steps), 6_000)
+        env_cfg.curriculum.approach_phase_steps = min(int(env_cfg.curriculum.approach_phase_steps), 14_000)
+        env_cfg.curriculum.hand_push_phase_steps = min(int(env_cfg.curriculum.hand_push_phase_steps), 28_000)
+        env_cfg.curriculum.body_slam_phase_steps = min(int(env_cfg.curriculum.body_slam_phase_steps), 48_000)
+        env_cfg.curriculum.full_fight_phase_steps = min(int(env_cfg.curriculum.full_fight_phase_steps), 80_000)
+        env_cfg.curriculum.fall_recovery_reset_probability = max(
+            float(env_cfg.curriculum.fall_recovery_reset_probability), 0.12
+        )
+        env_cfg.curriculum.fall_recovery_reset_start_step = min(
+            int(env_cfg.curriculum.fall_recovery_reset_start_step), 12_000
+        )
         env_cfg.perturbations.enabled = True
         env_cfg.perturbations.probability = max(float(env_cfg.perturbations.probability), 0.85)
         env_cfg.perturbations.time_min_s = min(float(env_cfg.perturbations.time_min_s), 0.45)
@@ -232,6 +251,12 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
         env_cfg.rewards.feet_air_time_biped = max(float(env_cfg.rewards.feet_air_time_biped), 3.0)
         env_cfg.rewards.single_stance_balance = max(float(env_cfg.rewards.single_stance_balance), 4.0)
         env_cfg.rewards.cadence_or_alternating_support = max(float(env_cfg.rewards.cadence_or_alternating_support), 1.4)
+        env_cfg.rewards.leg_drive_participation = max(float(env_cfg.rewards.leg_drive_participation), 4.0)
+        env_cfg.rewards.foot_plant_during_push = max(float(env_cfg.rewards.foot_plant_during_push), 6.0)
+        env_cfg.rewards.opponent_angular_destabilization = max(
+            float(env_cfg.rewards.opponent_angular_destabilization), 5.0
+        )
+        env_cfg.rewards.torso_grounded_penalty = max(float(env_cfg.rewards.torso_grounded_penalty), 18.0)
         env_cfg.rewards.root_height_velocity_down = max(float(env_cfg.rewards.root_height_velocity_down), 25.0)
         env_cfg.rewards.torso_only_motion = max(float(env_cfg.rewards.torso_only_motion), 24.0)
         env_cfg.rewards.attack_momentum = max(float(env_cfg.rewards.attack_momentum), 3.4)
@@ -310,6 +335,26 @@ def _apply_league_role_reward_bias(env_cfg, league_role: str) -> None:  # noqa: 
         env_cfg.rewards.opponent_tilt_delta *= 1.35
         env_cfg.rewards.opponent_support_break *= 1.35
         env_cfg.rewards.perturbation_recovery *= 1.15
+    elif league_role == "recovery_specialist":
+        env_cfg.rewards.fall_recovery_getup *= 1.55
+        env_cfg.rewards.fall_recovery_stand *= 1.45
+        env_cfg.rewards.perturbation_recovery *= 1.35
+        env_cfg.rewards.self_fall *= 1.20
+        env_cfg.curriculum.fall_recovery_reset_probability = max(
+            float(env_cfg.curriculum.fall_recovery_reset_probability), 0.25
+        )
+    elif league_role == "brace_defender":
+        env_cfg.rewards.center_of_mass_over_support *= 1.35
+        env_cfg.rewards.capture_point_support *= 1.35
+        env_cfg.rewards.foot_plant_during_push *= 1.30
+        env_cfg.rewards.impact_balance *= 1.35
+        env_cfg.rewards.impact_self_destabilization *= 1.25
+    elif league_role == "leg_kick_exploiter":
+        env_cfg.rewards.leg_drive_participation *= 1.35
+        env_cfg.rewards.limb_contact_reward *= 1.35
+        env_cfg.rewards.foot_clearance *= 1.25
+        env_cfg.rewards.opponent_support_break *= 1.25
+        env_cfg.rewards.bad_contact_penalty *= 1.20
 
 
 def _apply_pbt_reward_mutation(env_cfg, seed: int, mutation_scale: float) -> None:  # noqa: ANN001
@@ -323,6 +368,8 @@ def _apply_pbt_reward_mutation(env_cfg, seed: int, mutation_scale: float) -> Non
         "perturbation_recovery",
         "fall_recovery_getup",
         "fall_recovery_stand",
+        "leg_drive_participation",
+        "foot_plant_during_push",
         "one_hand_push_contact",
         "one_hand_push_balance",
         "one_hand_push_destabilize",
@@ -418,6 +465,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.motion_prior.enabled = True
         env_cfg.motion_prior.artifact_path = args_cli.motion_prior_artifact
         env_cfg.motion_prior.reward_scale = args_cli.motion_prior_reward_scale
+        env_cfg.rewards.motion_prior = max(float(env_cfg.rewards.motion_prior), 1.0)
     if args_cli.enable_pbt and hasattr(env_cfg, "pbt"):
         env_cfg.pbt.enabled = True
         env_cfg.pbt.mutation_seed = int(args_cli.pbt_mutation_seed)
@@ -464,7 +512,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "algorithm": algorithm.upper(),
             "task": args_cli.task,
             "seed": args_cli.seed,
-            "reward_version": "residual_amp_league_recovery_adr_v16",
+            "reward_version": "privileged_phase_amp_league_recovery_v17",
             "league_role": args_cli.league_role,
             "config_hash": hashlib.sha256(
                 json.dumps(

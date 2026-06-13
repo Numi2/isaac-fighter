@@ -62,6 +62,26 @@ def quat_from_yaw(yaw: torch.Tensor) -> torch.Tensor:
     return torch.stack((torch.cos(half), torch.zeros_like(yaw), torch.zeros_like(yaw), torch.sin(half)), dim=-1)
 
 
+def quat_from_euler_xyz(roll: torch.Tensor, pitch: torch.Tensor, yaw: torch.Tensor) -> torch.Tensor:
+    """Return Isaac/PhysX wxyz quaternion from XYZ Euler angles."""
+
+    half_roll = 0.5 * roll
+    half_pitch = 0.5 * pitch
+    half_yaw = 0.5 * yaw
+    cr, sr = torch.cos(half_roll), torch.sin(half_roll)
+    cp, sp = torch.cos(half_pitch), torch.sin(half_pitch)
+    cy, sy = torch.cos(half_yaw), torch.sin(half_yaw)
+    return torch.stack(
+        (
+            cr * cp * cy + sr * sp * sy,
+            sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+        ),
+        dim=-1,
+    )
+
+
 def rotate_yaw_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     return quat_apply_inverse(quat_from_yaw(yaw_from_quat(q)), v)
 

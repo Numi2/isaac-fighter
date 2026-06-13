@@ -258,6 +258,8 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         elo_window: float = 250.0,
         weakness_bias: float = 0.65,
         latest_bias: float = 0.15,
+        pfsp_hard_bias: float = 0.0,
+        role_exploration: float = 0.05,
         update_interval_steps: int = 1000,
         side_swap_probability: float = 0.5,
         live_self_play_fraction: float = 0.25,
@@ -274,6 +276,8 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
         self.elo_window = elo_window
         self.weakness_bias = weakness_bias
         self.latest_bias = latest_bias
+        self.pfsp_hard_bias = max(0.0, min(1.0, float(pfsp_hard_bias)))
+        self.role_exploration = max(0.0, float(role_exploration))
         self.update_interval_steps = max(1, int(update_interval_steps))
         self.side_swap_probability = max(0.0, min(1.0, float(side_swap_probability)))
         self.live_self_play_fraction = max(0.0, min(1.0, float(live_self_play_fraction)))
@@ -364,6 +368,8 @@ class HistoricalOpponentActionWrapper(gym.Wrapper):
             weakness_bias=self.weakness_bias,
             latest_bias=self.latest_bias,
             league_role_weights=self.league_role_weights,
+            pfsp_hard_bias=self.pfsp_hard_bias,
+            role_exploration=self.role_exploration,
         )
         self._current_sample = sample
         self._backends = {}
@@ -579,6 +585,8 @@ def maybe_wrap_historical_opponent(env: gym.Env, cfg, log_dir: str | Path | None
         elo_window=cfg.self_play.elo_window,
         weakness_bias=cfg.self_play.weakness_bias,
         latest_bias=cfg.self_play.latest_bias,
+        pfsp_hard_bias=getattr(cfg.self_play, "pfsp_hard_bias", 0.0),
+        role_exploration=getattr(cfg.self_play, "role_exploration", 0.05),
         update_interval_steps=getattr(cfg.self_play, "opponent_update_interval", 1000),
         side_swap_probability=getattr(cfg.self_play, "side_swap_probability", 0.5),
         live_self_play_fraction=getattr(cfg.self_play, "live_self_play_fraction", 0.25),
@@ -610,6 +618,9 @@ def _league_role_weights(self_play_cfg) -> dict[str, float]:  # noqa: ANN001
         "shove_exploiter": float(getattr(self_play_cfg, "league_shove_exploiter_weight", 0.25)),
         "body_slam_exploiter": float(getattr(self_play_cfg, "league_body_slam_exploiter_weight", 0.15)),
         "balance_breaker": float(getattr(self_play_cfg, "league_balance_breaker_weight", 0.15)),
+        "recovery_specialist": float(getattr(self_play_cfg, "league_recovery_specialist_weight", 0.08)),
+        "brace_defender": float(getattr(self_play_cfg, "league_brace_defender_weight", 0.07)),
+        "leg_kick_exploiter": float(getattr(self_play_cfg, "league_leg_kick_exploiter_weight", 0.05)),
     }
 
 

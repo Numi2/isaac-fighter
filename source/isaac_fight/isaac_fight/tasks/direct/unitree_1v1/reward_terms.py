@@ -101,6 +101,12 @@ class CombatRewardComputer:
         after_warmup = torch.clamp((episode_time - warmup_s) / 0.75, 0.0, 1.0)
         early_fall_window = torch.clamp((2.0 - episode_time) / 2.0, 0.0, 1.0)
         action_gate = env._standing_warmup_action_gate()
+        phase = env._curriculum_phase_weights(agent, opponent)
+        approach_phase = phase["approach"]
+        hand_push_phase = phase["hand_push"]
+        body_slam_phase = phase["body_slam"]
+        attack_phase = phase["attack"]
+        recovery_curriculum_phase = phase["recovery"]
         warmup_action_restraint = warmup_gate * env._posture_action_magnitude(agent) * (1.0 + 2.0 * (1.0 - upright))
         stand_still_joint_deviation = env._stand_still_joint_deviation(agent) * torch.clamp(
             warmup_gate + 0.50 * (1.0 - action_gate), 0.0, 1.0
@@ -122,14 +128,15 @@ class CombatRewardComputer:
             * foot_support_quality
             * facing_gate
             * action_gate
+            * approach_phase
             * (desired_approach_speed > 0.05).float()
         )
         yaw_heading_tracking = torch.exp(-torch.square(heading_error / 0.55)) * upright * (0.25 + 0.75 * action_gate)
-        controlled_approach = approach_delta * facing_gate * upright * combat_gate
-        locomotion_drive = env._locomotion_drive[agent] * facing_gate * upright * combat_gate
-        forward_step_progress = torch.relu(approach_delta) * foot_support_quality * facing_gate
+        controlled_approach = approach_delta * facing_gate * upright * combat_gate * approach_phase
+        locomotion_drive = env._locomotion_drive[agent] * facing_gate * upright * combat_gate * approach_phase
+        forward_step_progress = torch.relu(approach_delta) * foot_support_quality * facing_gate * approach_phase
         retreat_from_opponent = torch.relu(-toward_speed) * (distance > 0.45).float() * (0.3 + 0.7 * upright)
-        approach_with_feet_gate = torch.relu(approach_delta) * facing_gate * foot_support_quality * combat_gate
+        approach_with_feet_gate = torch.relu(approach_delta) * facing_gate * foot_support_quality * combat_gate * approach_phase
         stance_width_value = env._support_stance_width(agent)
         stance_width = torch.exp(-torch.square((stance_width_value - 0.34) / 0.24)) * upright
         foot_clearance = env._support_clearance(agent) * torch.clamp(root_speed / 1.0, 0.0, 1.0) * upright
@@ -141,9 +148,16 @@ class CombatRewardComputer:
             * torch.clamp(root_speed / 1.0, 0.0, 1.0)
             * upright
         )
+        leg_drive_participation = (
+            torch.clamp(env._leg_action_magnitude(agent), 0.0, 1.0)
+            * torch.relu(approach_delta)
+            * foot_support_quality
+            * facing_gate
+            * approach_phase
+        )
         root_height_velocity_down = torch.relu(env._prev_root_height[agent] - root_pos[:, 2]) / max(env.step_dt, 1.0e-6)
         contact_intent = env._contact_intent[agent] * facing_gate * upright * env.proxy_reward_scale() * combat_gate
-        attack_momentum = env._attack_momentum[agent] * facing_gate * upright * combat_gate
+        attack_momentum = env._attack_momentum[agent] * facing_gate * upright * combat_gate * attack_phase
 
         radial = torch.linalg.norm(root_pos[:, :2], dim=-1)
         arena_control = torch.clamp(1.0 - torch.square(radial / env.cfg.arena.radius), 0.0, 1.0)
@@ -200,6 +214,7 @@ class CombatRewardComputer:
             * foot_support_quality
             * action_gate
             * push_setup_gate
+            * hand_push_phase
         )
         one_hand_push_contact = (
             selected_push_contact
@@ -208,6 +223,7 @@ class CombatRewardComputer:
             * foot_support_quality
             * combat_gate
             * push_distance_gate
+            * hand_push_phase
         )
         one_hand_push_balance = (
             push_activity
@@ -215,9 +231,17 @@ class CombatRewardComputer:
             * env._capture_point_support_quality(agent)
             * upright
             * (0.25 + 0.75 * action_gate)
+            * hand_push_phase
         )
         one_hand_push_destabilize = one_hand_push_contact * (
             1.0 + torch.clamp(env._opponent_destabilization[agent], 0.0, 2.0)
+        )
+        foot_plant_during_push = (
+            push_activity
+            * env._both_feet_support(agent)
+            * env._capture_point_support_quality(agent)
+            * upright
+            * hand_push_phase
         )
         offhand_push_penalty = (
             offhand_push_contact * push_distance_gate
@@ -230,11 +254,12 @@ class CombatRewardComputer:
             * torch.clamp(toward_speed / env.cfg.contact.strike_speed_normalizer, 0.0, 2.0)
             * foot_support_quality
             * combat_gate
+            * body_slam_phase
         )
-        destabilizing_impact = env._destabilizing_impact[agent] * upright * combat_gate
-        topple_pressure = env._topple_pressure[agent] * upright * combat_gate
-        drive_pressure = env._drive_pressure[agent] * upright * combat_gate
-        support_break_pressure = env._support_break_pressure[agent] * upright * combat_gate
+        destabilizing_impact = env._destabilizing_impact[agent] * upright * combat_gate * attack_phase
+        topple_pressure = env._topple_pressure[agent] * upright * combat_gate * attack_phase
+        drive_pressure = env._drive_pressure[agent] * upright * combat_gate * attack_phase
+        support_break_pressure = env._support_break_pressure[agent] * upright * combat_gate * attack_phase
         recent_attack = torch.clamp(env._recent_attack_pressure[agent], 0.0, 5.0) * combat_gate
         attack_credit = torch.maximum(torch.clamp(env._proof_impact[agent], 0.0, 5.0), recent_attack)
         attack_gate = torch.clamp(attack_credit, 0.0, 1.0)
@@ -255,9 +280,20 @@ class CombatRewardComputer:
             * (attack_credit < 0.10).float()
         )
         bad_contact_penalty = torso_contact * (1.0 - foot_support_quality) * (attack_credit < 0.15).float()
+        torso_grounded_penalty = (
+            torso_contact
+            * (support_quality < 0.25).float()
+            * (height_ratio < 0.82).float()
+            * (attack_credit < 0.20).float()
+        )
         opponent_tilt_delta = torch.relu(env._prev_up_z[opponent] - env._up_z[opponent]) * attack_gate
         opponent_height_drop_delta = torch.relu(env._prev_root_height[opponent] - opp_pos[:, 2]) * attack_gate
         opponent_support_break = env._support_break_pressure[agent] * attack_gate
+        opponent_angular_destabilization = (
+            torch.clamp(torch.linalg.norm(env.root_ang_vel_b(opponent)[:, :2], dim=-1) / 3.0, 0.0, 2.0)
+            * attack_gate
+            * (1.0 - self_fall)
+        )
         opponent_drive_dir = torch.sum(opp_lin_vel_w * rel_dir, dim=-1)
         impulse_direction_reward = (
             (
@@ -302,6 +338,7 @@ class CombatRewardComputer:
         fall_cause_credit = clean_attack * (
             env._new_fall[opponent].float() + 0.5 * env._new_knockdown[opponent].float()
         )
+        motion_prior = env._motion_prior_reward(agent, opponent)
 
         final_win, final_loss, final_draw = self._terminal_terms(env, agent)
 
@@ -327,9 +364,9 @@ class CombatRewardComputer:
             "leg_extension_posture": scales.leg_extension_posture * leg_extension_posture,
             "perturbation_recovery": scales.perturbation_recovery * perturbation_recovery,
             "perturbation_collapse": -scales.perturbation_collapse * perturbation_collapse,
-            "fall_recovery_getup": scales.fall_recovery_getup * fall_recovery_getup,
-            "fall_recovery_stand": scales.fall_recovery_stand * fall_recovery_stand,
-            "fall_recovery_failure": -scales.fall_recovery_failure * fall_recovery_failure,
+            "fall_recovery_getup": scales.fall_recovery_getup * fall_recovery_getup * recovery_curriculum_phase,
+            "fall_recovery_stand": scales.fall_recovery_stand * fall_recovery_stand * recovery_curriculum_phase,
+            "fall_recovery_failure": -scales.fall_recovery_failure * fall_recovery_failure * recovery_curriculum_phase,
             "airborne_without_attack": -scales.airborne_without_attack * airborne_without_attack,
             "fall_early": -scales.fall_early * fall_early,
             "recovery_reward": scales.recovery_reward * recovery_reward,
@@ -348,6 +385,9 @@ class CombatRewardComputer:
             "feet_air_time_biped": scales.feet_air_time_biped * feet_air_time_biped,
             "single_stance_balance": scales.single_stance_balance * single_stance_balance,
             "cadence_or_alternating_support": scales.cadence_or_alternating_support * cadence_or_alternating_support,
+            "leg_drive_participation": scales.leg_drive_participation * leg_drive_participation,
+            "foot_plant_during_push": scales.foot_plant_during_push * foot_plant_during_push,
+            "motion_prior": scales.motion_prior * motion_prior,
             "root_height_velocity_down": -scales.root_height_velocity_down * root_height_velocity_down,
             "torso_only_motion": -scales.torso_only_motion * torso_only_motion,
             "contact_intent": scales.contact_intent * contact_intent,
@@ -363,6 +403,7 @@ class CombatRewardComputer:
             "offhand_push_penalty": -scales.offhand_push_penalty * offhand_push_penalty,
             "torso_charge_reward": scales.torso_charge_reward * torso_charge_reward,
             "bad_contact_penalty": -scales.bad_contact_penalty * bad_contact_penalty,
+            "torso_grounded_penalty": -scales.torso_grounded_penalty * torso_grounded_penalty,
             "destabilizing_impact": scales.destabilizing_impact * destabilizing_impact,
             "topple_pressure": scales.topple_pressure * topple_pressure,
             "drive_pressure": scales.drive_pressure * drive_pressure,
@@ -370,6 +411,8 @@ class CombatRewardComputer:
             "opponent_tilt_delta": scales.opponent_tilt_delta * opponent_tilt_delta,
             "opponent_height_drop_delta": scales.opponent_height_drop_delta * opponent_height_drop_delta,
             "opponent_support_break": scales.opponent_support_break * opponent_support_break,
+            "opponent_angular_destabilization": scales.opponent_angular_destabilization
+            * opponent_angular_destabilization,
             "impulse_direction_reward": scales.impulse_direction_reward * impulse_direction_reward,
             "opponent_fall": scales.opponent_fall * opponent_fall,
             "opponent_destabilization": scales.opponent_destabilization * opp_destabilization,

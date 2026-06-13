@@ -23,12 +23,24 @@ from isaac_fight.assets.robots.unitree import (
     get_unitree_robot_cfg,
     get_unitree_robot_spec,
 )
-from isaac_fight.utils.torch_math import normalize, quat_apply_inverse, quat_from_yaw, rotate_yaw_inverse, yaw_from_quat
+from isaac_fight.utils.torch_math import (
+    normalize,
+    quat_apply_inverse,
+    quat_from_euler_xyz,
+    quat_from_yaw,
+    rotate_yaw_inverse,
+    yaw_from_quat,
+)
 
 from .fight_common import FighterRuntimeInfo
 from .fight_rules import FightRuleEngine
 from .fighter_ids import FIGHTER_A, FIGHTER_B, FIGHTERS, opponent_of
-from .observations import OPPONENT_KEYPOINTS, CombatObservationBuilder
+from .observations import (
+    OPPONENT_KEYPOINTS,
+    PRIVILEGED_AGENT_FEATURE_DIM,
+    PRIVILEGED_PAIR_FEATURE_DIM,
+    CombatObservationBuilder,
+)
 from .replay import MatchReplayRecorder, ReplayHeader
 from .reward_terms import CombatRewardComputer
 from .unitree_1v1_env_cfg import GhostFighterUnitree1v1EnvCfg
@@ -534,7 +546,149 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
 
     def _get_states(self) -> torch.Tensor:
         obs = self._get_observations()
-        return torch.cat([obs[agent].reshape(self.num_envs, -1) for agent in FIGHTERS], dim=-1)
+        state = torch.cat(
+            (
+                obs[FIGHTER_A].reshape(self.num_envs, -1),
+                obs[FIGHTER_B].reshape(self.num_envs, -1),
+                self._privileged_pair_features(),
+                self._privileged_agent_features(FIGHTER_A),
+                self._privileged_agent_features(FIGHTER_B),
+            ),
+            dim=-1,
+        )
+        return torch.clamp(state, -10.0, 10.0)
+
+    def _privileged_pair_features(self) -> torch.Tensor:
+        rel_pos = self.root_pos(FIGHTER_B) - self.root_pos(FIGHTER_A)
+        rel_vel = self.root_lin_vel_w(FIGHTER_B) - self.root_lin_vel_w(FIGHTER_A)
+        distance = torch.linalg.norm(rel_pos[:, :2], dim=-1)
+        rel_dir = normalize(torch.cat((rel_pos[:, :2], torch.zeros_like(rel_pos[:, 2:3])), dim=-1))
+        closing_speed = torch.sum((self.root_lin_vel_w(FIGHTER_A) - self.root_lin_vel_w(FIGHTER_B)) * rel_dir, dim=-1)
+        features = torch.cat(
+            (
+                torch.clamp(rel_pos / max(float(self.cfg.arena.radius), 1.0e-6), -5.0, 5.0),
+                torch.clamp(rel_vel * self.cfg.observations_cfg.relative_velocity_scale, -5.0, 5.0),
+                torch.stack(
+                    (
+                        torch.clamp(distance / max(float(self.cfg.arena.radius), 1.0e-6), 0.0, 5.0),
+                        torch.clamp(closing_speed / self.cfg.contact.strike_speed_normalizer, -5.0, 5.0),
+                        rel_dir[:, 0],
+                        rel_dir[:, 1],
+                        self._match_terminal.float(),
+                        self._time_out.float(),
+                        self._draw.float(),
+                        torch.clamp(
+                            self._no_engagement_clock
+                            / max(float(self.cfg.curriculum.no_engagement_timeout_s), 1.0e-6),
+                            0.0,
+                            5.0,
+                        ),
+                    ),
+                    dim=-1,
+                ),
+            ),
+            dim=-1,
+        )
+        if features.shape[-1] != PRIVILEGED_PAIR_FEATURE_DIM:
+            raise RuntimeError(
+                f"privileged pair feature dim {features.shape[-1]} != {PRIVILEGED_PAIR_FEATURE_DIM}"
+            )
+        return features
+
+    def _privileged_agent_features(self, agent: str) -> torch.Tensor:
+        opponent = opponent_of(agent)
+        root_pos = self.root_pos(agent)
+        height_ratio = root_pos[:, 2] / max(self._runtime[agent].default_base_height, 1.0e-6)
+        rel = self.root_pos(opponent) - root_pos
+        rel_dir = normalize(torch.cat((rel[:, :2], torch.zeros_like(rel[:, 2:3])), dim=-1))
+        push_left, push_right = self._push_hand_command_features(agent)
+        max_linear_perturb = max(float(self.cfg.perturbations.linear_velocity_max), 1.0e-6)
+        max_angular_perturb = max(float(self.cfg.perturbations.angular_velocity_max), 1.0e-6)
+        scalar_features = torch.stack(
+            (
+                self._up_z[agent],
+                height_ratio,
+                self._fallen[agent].float(),
+                self._knockdown[agent].float(),
+                self._out_of_bounds[agent].float(),
+                torch.clamp(self._knockdown_clock[agent] / max(float(self.cfg.rules.knockout_grace_s), 1.0e-6), 0.0, 5.0),
+                torch.clamp(self._support_quality(agent), 0.0, 1.0),
+                torch.clamp(self._stance_quality(agent), 0.0, 1.0),
+                torch.clamp(self._capture_point_support_quality(agent), 0.0, 1.0),
+                torch.clamp(self._both_feet_support(agent), 0.0, 1.0),
+                torch.clamp(self._single_stance_balance(agent), 0.0, 1.0),
+                torch.clamp(self._support_bias(agent), -1.0, 1.0),
+                torch.clamp(self._support_radius(agent), 0.0, 2.0),
+                torch.clamp(self._support_stance_width(agent), 0.0, 2.0),
+                torch.clamp(self._support_mean_speed(agent) / 2.0, 0.0, 5.0),
+                torch.clamp(self._support_clearance(agent), 0.0, 1.0),
+                torch.clamp((root_pos[:, 2] - self._prev_root_height[agent]) / 0.20, -5.0, 5.0),
+                torch.clamp(self._up_z[agent] - self._prev_up_z[agent], -2.0, 2.0),
+                torch.clamp(self.root_lin_vel_w(agent)[:, 2] / 2.0, -5.0, 5.0),
+                torch.clamp(self._candidate_body_contact_force[agent] / self.cfg.contact.force_normalizer, 0.0, 5.0),
+                torch.clamp(self._real_opponent_contact_force[agent] / self.cfg.contact.force_normalizer, 0.0, 5.0),
+                torch.clamp(self._ground_contact_force[agent] / self.cfg.contact.force_normalizer, 0.0, 5.0),
+                torch.clamp(self._proxy_engagement[agent] / self.cfg.contact.force_normalizer, 0.0, 5.0),
+                torch.clamp(self._training_contact_force[agent] / self.cfg.contact.force_normalizer, 0.0, 5.0),
+                torch.clamp(self._eval_contact_force[agent] / self.cfg.contact.force_normalizer, 0.0, 5.0),
+                torch.clamp(self._useful_contact[agent], 0.0, 5.0),
+                torch.clamp(self._proof_contact[agent], 0.0, 5.0),
+                torch.clamp(self._proof_impact[agent], 0.0, 5.0),
+                torch.clamp(self._recent_attack_pressure[agent], 0.0, 5.0),
+                torch.clamp(self._opponent_destabilization[agent], 0.0, 5.0),
+                torch.clamp(self._attack_momentum[agent], 0.0, 5.0),
+                torch.clamp(self._strike_speed[agent] / self.cfg.contact.strike_speed_normalizer, 0.0, 5.0),
+                torch.clamp(self._destabilizing_impact[agent], 0.0, 5.0),
+                torch.clamp(self._topple_pressure[agent], 0.0, 5.0),
+                torch.clamp(self._drive_pressure[agent], 0.0, 5.0),
+                torch.clamp(self._support_break_pressure[agent], 0.0, 5.0),
+                torch.clamp(self._selected_push_contact_force(agent) / self.cfg.contact.force_normalizer, 0.0, 5.0),
+                torch.clamp(self._offhand_push_contact_force(agent) / self.cfg.contact.force_normalizer, 0.0, 5.0),
+                torch.clamp(
+                    self._selected_push_speed(agent, opponent, rel_dir) / self.cfg.contact.strike_speed_normalizer,
+                    0.0,
+                    5.0,
+                ),
+                torch.clamp(
+                    self._offhand_push_speed(agent, opponent, rel_dir) / self.cfg.contact.strike_speed_normalizer,
+                    0.0,
+                    5.0,
+                ),
+                torch.clamp(self._selected_push_reach(agent, rel_dir), -2.0, 2.0),
+                torch.clamp(self._selected_push_arm_action_magnitude(agent), 0.0, 5.0),
+                torch.clamp(self._offhand_push_arm_action_magnitude(agent), 0.0, 5.0),
+                push_left,
+                push_right,
+                torch.clamp(self._energy_ema[agent] / self.cfg.rewards.energy_normalizer, 0.0, 5.0),
+                torch.clamp(self._torque_penalty[agent], 0.0, 5.0),
+                torch.clamp(self._joint_limit_penalty[agent], 0.0, 5.0),
+                torch.clamp(self._jitter_penalty[agent], 0.0, 5.0),
+                torch.clamp(self._inactivity[agent], 0.0, 1.0),
+                torch.clamp(self._spin_without_contact[agent] / 5.0, 0.0, 5.0),
+                torch.clamp(self._posture_instability[agent], 0.0, 5.0),
+                self._perturbation_active(agent),
+                self._perturbation_elapsed_fraction(agent),
+            ),
+            dim=-1,
+        )
+        features = torch.cat(
+            (
+                torch.clamp(root_pos / max(float(self.cfg.arena.radius), 1.0e-6), -5.0, 5.0),
+                self.root_quat(agent),
+                torch.clamp(self.root_lin_vel_w(agent) * self.cfg.observations_cfg.base_linear_velocity_scale, -5.0, 5.0),
+                torch.clamp(self.root_ang_vel_b(agent) * self.cfg.observations_cfg.base_angular_velocity_scale, -5.0, 5.0),
+                self.projected_gravity_b(agent),
+                scalar_features,
+                torch.clamp(self._perturb_linear_velocity[agent] / max_linear_perturb, -5.0, 5.0),
+                torch.clamp(self._perturb_angular_velocity[agent] / max_angular_perturb, -5.0, 5.0),
+            ),
+            dim=-1,
+        )
+        if features.shape[-1] != PRIVILEGED_AGENT_FEATURE_DIM:
+            raise RuntimeError(
+                f"{agent} privileged feature dim {features.shape[-1]} != {PRIVILEGED_AGENT_FEATURE_DIM}"
+            )
+        return features
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
         rewards: dict[str, torch.Tensor] = {}
@@ -655,10 +809,50 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             speed = forward_speed + noise * (2.0 * torch.rand_like(yaw) - 1.0)
             root_state[:, 7] = speed * torch.cos(yaw)
             root_state[:, 8] = speed * torch.sin(yaw)
+        self._apply_fall_recovery_reset_pose(env_ids, root_state, joint_pos, joint_vel, yaw)
 
         robot.write_root_pose_to_sim(root_state[:, :7], env_ids)
         robot.write_root_velocity_to_sim(root_state[:, 7:], env_ids)
         robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+
+    def _apply_fall_recovery_reset_pose(
+        self,
+        env_ids: torch.Tensor,
+        root_state: torch.Tensor,
+        joint_pos: torch.Tensor,
+        joint_vel: torch.Tensor,
+        yaw: torch.Tensor,
+    ) -> None:
+        cfg = self.cfg.curriculum
+        if not cfg.enabled or not cfg.fall_recovery_enabled or env_ids.numel() == 0:
+            return
+        if int(getattr(self, "common_step_counter", 0)) < int(cfg.fall_recovery_reset_start_step):
+            return
+        probability = max(0.0, min(1.0, float(cfg.fall_recovery_reset_probability)))
+        if probability <= 0.0:
+            return
+        mask = torch.rand(env_ids.numel(), device=self.device) < probability
+        if not bool(mask.any().item()):
+            return
+
+        count = env_ids.numel()
+        noise = 0.18 * (2.0 * torch.rand(count, device=self.device) - 1.0)
+        side_case = torch.rand(count, device=self.device) < 0.5
+        sign = torch.where(
+            torch.rand(count, device=self.device) < 0.5,
+            -torch.ones(count, device=self.device),
+            torch.ones(count, device=self.device),
+        )
+        roll = torch.where(side_case, sign * (0.5 * math.pi + noise), noise)
+        pitch = torch.where(side_case, noise, sign * (0.5 * math.pi + noise))
+        root_state[mask, 2] = self.scene.env_origins[env_ids[mask], 2] + float(cfg.fall_recovery_root_height)
+        root_state[mask, 3:7] = quat_from_euler_xyz(roll[mask], pitch[mask], yaw[mask])
+
+        vel_noise = float(cfg.fall_recovery_velocity_noise)
+        root_state[mask, 7:13] = vel_noise * (2.0 * torch.rand_like(root_state[mask, 7:13]) - 1.0)
+        joint_noise = float(cfg.fall_recovery_joint_noise)
+        joint_pos[mask] += joint_noise * (2.0 * torch.rand_like(joint_pos[mask]) - 1.0)
+        joint_vel[mask] += vel_noise * (2.0 * torch.rand_like(joint_vel[mask]) - 1.0)
 
     def _reset_buffers(self, env_ids: torch.Tensor) -> None:
         for agent in FIGHTERS:
@@ -1571,8 +1765,62 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
     def _desired_approach_speed(self, agent: str, opponent: str) -> torch.Tensor:
         distance = torch.linalg.norm((self.root_pos(opponent) - self.root_pos(agent))[:, :2], dim=-1)
         gate = self._standing_warmup_action_gate()
+        phase = self._curriculum_phase_weights(agent, opponent)
         speed = 0.85 * torch.clamp((distance - 0.45) / 0.95, 0.0, 1.0)
-        return speed * gate
+        return speed * gate * torch.clamp(0.20 + 0.80 * phase["approach"], 0.0, 1.0)
+
+    def _curriculum_phase_weights(self, agent: str, opponent: str) -> dict[str, torch.Tensor]:
+        del opponent  # Phase gates currently depend on global progress and own stability history.
+        ones = torch.ones(self.num_envs, device=self.device)
+        if not self.cfg.curriculum.enabled:
+            return {
+                "stand": ones,
+                "approach": ones,
+                "hand_push": ones,
+                "body_slam": ones,
+                "full_fight": ones,
+                "recovery": ones,
+                "attack": ones,
+            }
+        cfg = self.cfg.curriculum
+        stability_gate = self._phase_stability_gate(agent)
+        stand = ones
+        approach = self._phase_ramp(cfg.stand_phase_steps, cfg.approach_phase_steps) * stability_gate
+        hand_push = self._phase_ramp(cfg.approach_phase_steps, cfg.hand_push_phase_steps) * stability_gate
+        body_slam = self._phase_ramp(cfg.hand_push_phase_steps, cfg.body_slam_phase_steps) * stability_gate
+        full_fight = self._phase_ramp(cfg.body_slam_phase_steps, cfg.full_fight_phase_steps) * stability_gate
+        recovery = self._phase_ramp(cfg.fall_recovery_reset_start_step, cfg.hand_push_phase_steps)
+        attack = torch.maximum(approach, torch.maximum(hand_push, torch.maximum(body_slam, full_fight)))
+        return {
+            "stand": stand,
+            "approach": approach,
+            "hand_push": hand_push,
+            "body_slam": body_slam,
+            "full_fight": full_fight,
+            "recovery": recovery,
+            "attack": attack,
+        }
+
+    def _phase_ramp(self, start_step: int, end_step: int) -> torch.Tensor:
+        if end_step <= start_step:
+            value = 1.0 if self.common_step_counter >= start_step else 0.0
+        else:
+            value = (float(self.common_step_counter) - float(start_step)) / float(end_step - start_step)
+        return torch.full((self.num_envs,), max(0.0, min(1.0, value)), device=self.device)
+
+    def _phase_stability_gate(self, agent: str) -> torch.Tensor:
+        cfg = self.cfg.curriculum
+        stance = torch.clamp(
+            (self._history_stance_quality[agent] - float(cfg.phase_min_stance_quality)) / 0.25,
+            0.0,
+            1.0,
+        )
+        support = torch.clamp(
+            (self._history_support_quality[agent] - float(cfg.phase_min_support_quality)) / 0.25,
+            0.0,
+            1.0,
+        )
+        return torch.clamp(0.20 + 0.80 * stance * support, 0.0, 1.0)
 
     def _phase_features(self, agent: str, opponent: str) -> torch.Tensor:
         episode_time = self.episode_length_buf.float() * self.step_dt
@@ -1644,13 +1892,50 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             1.0,
         )
         stance = torch.clamp((self._stance_quality(agent) - 0.25) / 0.50, 0.0, 1.0)
-        return warmup * stance
+        phase = torch.clamp(self._curriculum_phase_weights(agent, opponent_of(agent))["attack"], 0.0, 1.0)
+        return warmup * stance * torch.clamp(0.20 + 0.80 * phase, 0.0, 1.0)
 
     def _waist_action_magnitude(self, agent: str) -> torch.Tensor:
         waist_ids = self._waist_action_id_tensors.get(agent)
         if waist_ids is None or waist_ids.numel() == 0:
             return torch.zeros(self.num_envs, device=self.device)
         return torch.mean(torch.square(self._actions[agent].index_select(1, waist_ids)), dim=-1)
+
+    def _leg_action_magnitude(self, agent: str) -> torch.Tensor:
+        leg_ids = self._leg_action_id_tensors.get(agent)
+        if leg_ids is None or leg_ids.numel() == 0:
+            return torch.zeros(self.num_envs, device=self.device)
+        return torch.mean(torch.square(self._actions[agent].index_select(1, leg_ids)), dim=-1)
+
+    def _motion_prior_reward(self, agent: str, opponent: str) -> torch.Tensor:
+        motion_prior = getattr(self.cfg, "motion_prior", None)
+        if motion_prior is None or not motion_prior.enabled or motion_prior.reward_scale <= 0.0:
+            return torch.zeros(self.num_envs, device=self.device)
+        rel = self.root_pos(opponent) - self.root_pos(agent)
+        distance = torch.linalg.norm(rel[:, :2], dim=-1)
+        rel_dir = normalize(torch.cat((rel[:, :2], torch.zeros_like(rel[:, 2:3])), dim=-1))
+        toward_speed = torch.relu(torch.sum(self.root_lin_vel_w(agent) * rel_dir, dim=-1))
+        stand = self._stance_quality(agent) * self._standing_pose_quality(agent)
+        gait = (
+            self._feet_air_time_biped(agent)
+            + self._support_clearance(agent) * torch.clamp(toward_speed / 1.0, 0.0, 1.0)
+            + torch.clamp(torch.abs(self._support_bias(agent) - self._prev_support_bias[agent]) / 0.75, 0.0, 1.0)
+        ) / 3.0
+        brace = self._capture_point_support_quality(agent) * self._support_quality(agent) * (
+            0.5 + 0.5 * self._perturbation_active(agent)
+        )
+        push = (
+            torch.clamp(self._selected_push_contact_force(agent) / self.cfg.contact.force_normalizer, 0.0, 1.0)
+            * self._both_feet_support(agent)
+            * (distance < 1.35).float()
+        )
+        reward = (
+            float(motion_prior.stand_pose_weight) * stand
+            + float(motion_prior.gait_weight) * gait
+            + float(motion_prior.brace_weight) * brace
+            + float(motion_prior.push_weight) * push
+        )
+        return float(motion_prior.reward_scale) * torch.clamp(reward, 0.0, 2.0)
 
     def _accumulate_episode_terms(self, agent: str, terms: dict[str, torch.Tensor]) -> None:
         for name, value in terms.items():

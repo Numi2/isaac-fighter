@@ -15,7 +15,7 @@ from isaaclab.utils import configclass
 from isaac_fight.assets.robots.unitree import get_unitree_robot_spec
 
 from .fighter_ids import FIGHTER_A, FIGHTER_B
-from .observations import observation_dim
+from .observations import observation_dim, privileged_state_dim
 
 
 def action_dim_for_fighter(fighter: FighterCfg) -> int:
@@ -121,6 +121,10 @@ class MotionPriorCfg:
     kind: str = "unitree_g1_mimic_npz"
     source_task: str = "Unitree-G1-29dof-Mimic"
     reward_scale: float = 0.0
+    stand_pose_weight: float = 0.35
+    gait_weight: float = 0.25
+    brace_weight: float = 0.20
+    push_weight: float = 0.20
 
 
 @configclass
@@ -185,6 +189,18 @@ class CurriculumCfg:
     engagement_min_training_contact: float = 0.02
     proxy_gain_anneal_steps: int = 50_000
     min_proxy_gain: float = 0.15
+    stand_phase_steps: int = 6_000
+    approach_phase_steps: int = 14_000
+    hand_push_phase_steps: int = 28_000
+    body_slam_phase_steps: int = 48_000
+    full_fight_phase_steps: int = 80_000
+    phase_min_stance_quality: float = 0.35
+    phase_min_support_quality: float = 0.30
+    fall_recovery_reset_probability: float = 0.10
+    fall_recovery_reset_start_step: int = 12_000
+    fall_recovery_root_height: float = 0.38
+    fall_recovery_joint_noise: float = 0.15
+    fall_recovery_velocity_noise: float = 0.08
 
 
 @configclass
@@ -233,6 +249,11 @@ class RewardScalesCfg:
     feet_air_time_biped: float = 0.70
     single_stance_balance: float = 0.90
     cadence_or_alternating_support: float = 0.70
+    leg_drive_participation: float = 1.20
+    foot_plant_during_push: float = 1.60
+    opponent_angular_destabilization: float = 2.40
+    torso_grounded_penalty: float = 5.00
+    motion_prior: float = 1.0
     root_height_velocity_down: float = 2.60
     torso_only_motion: float = 3.20
     contact_intent: float = 2.20
@@ -324,9 +345,14 @@ class SelfPlayCfg:
     league_training_enabled: bool = True
     league_role: str = "main"
     league_main_weight: float = 0.45
-    league_shove_exploiter_weight: float = 0.25
-    league_body_slam_exploiter_weight: float = 0.15
-    league_balance_breaker_weight: float = 0.15
+    league_shove_exploiter_weight: float = 0.18
+    league_body_slam_exploiter_weight: float = 0.12
+    league_balance_breaker_weight: float = 0.12
+    league_recovery_specialist_weight: float = 0.08
+    league_brace_defender_weight: float = 0.07
+    league_leg_kick_exploiter_weight: float = 0.05
+    pfsp_hard_bias: float = 0.35
+    role_exploration: float = 0.05
     promotion_min_proof_impact: float = 1.0e-6
     promotion_bootstrap_count: int = 1
 
@@ -339,8 +365,11 @@ class GhostFighterUnitree1v1EnvCfg(DirectMARLEnvCfg):
     decimation: int = 4
     episode_length_s: float = 10.0
     possible_agents: list[str] = [FIGHTER_A, FIGHTER_B]
-    state_space: int = observation_dim(get_unitree_robot_spec("g1_29dof").action_dim) + observation_dim(
-        get_unitree_robot_spec("h1").action_dim
+    state_space: int = privileged_state_dim(
+        {
+            FIGHTER_A: get_unitree_robot_spec("g1_29dof").action_dim,
+            FIGHTER_B: get_unitree_robot_spec("g1_29dof").action_dim,
+        }
     )
 
     # default robots: symmetric G1 self-play bootstraps emergent fighting fastest.
@@ -385,7 +414,7 @@ class GhostFighterUnitree1v1EnvCfg(DirectMARLEnvCfg):
         dim_b = action_dim_for_fighter(self.fighter_b)
         self.action_spaces = {FIGHTER_A: dim_a, FIGHTER_B: dim_b}
         self.observation_spaces = {FIGHTER_A: observation_dim(dim_a), FIGHTER_B: observation_dim(dim_b)}
-        self.state_space = self.observation_spaces[FIGHTER_A] + self.observation_spaces[FIGHTER_B]
+        self.state_space = privileged_state_dim(self.action_spaces)
         self.sim.render_interval = self.decimation
         if hasattr(self.sim, "physx") and hasattr(self.sim.physx, "gpu_max_rigid_patch_count"):
             self.sim.physx.gpu_max_rigid_patch_count = max(self.sim.physx.gpu_max_rigid_patch_count, 2**23)

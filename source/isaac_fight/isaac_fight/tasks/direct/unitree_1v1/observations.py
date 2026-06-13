@@ -12,12 +12,25 @@ from isaac_fight.utils.torch_math import heading_error_to_target, rotate_yaw_inv
 BASE_FEATURE_DIM = 64
 OPPONENT_KEYPOINTS = 7
 KEYPOINT_FEATURE_DIM = OPPONENT_KEYPOINTS * 6
+PRIVILEGED_PAIR_FEATURE_DIM = 14
+PRIVILEGED_AGENT_FEATURE_DIM = 76
 
 
 def observation_dim(action_dim: int) -> int:
     """Observation dimension for a fighter with ``action_dim`` controlled joints."""
 
     return BASE_FEATURE_DIM + 3 * int(action_dim) + KEYPOINT_FEATURE_DIM
+
+
+def privileged_state_dim(action_dims: dict[str, int] | tuple[int, ...] | list[int]) -> int:
+    """Centralized critic state dimension.
+
+    The actor observations stay deployable and ego-centric. The MAPPO critic receives those observations plus exact
+    simulator-only contact, support, perturbation and fall-state signals for both fighters.
+    """
+
+    dims = action_dims.values() if isinstance(action_dims, dict) else action_dims
+    return sum(observation_dim(dim) for dim in dims) + PRIVILEGED_PAIR_FEATURE_DIM + 2 * PRIVILEGED_AGENT_FEATURE_DIM
 
 
 class CombatObservationBuilder:
