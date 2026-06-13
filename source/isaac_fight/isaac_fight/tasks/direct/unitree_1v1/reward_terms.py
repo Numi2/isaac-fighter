@@ -46,6 +46,7 @@ class CombatRewardComputer:
         standing_height = upright * torch.exp(-16.0 * torch.square(height_ratio - 1.0))
         support_quality = env._support_quality(agent)
         support_contact = support_quality * standing_height
+        alive_stance = (~env._fallen[agent]).float() * (0.25 + 0.75 * upright) * (0.20 + 0.80 * support_quality)
         low_base_height = torch.relu(0.88 - height_ratio) * (1.0 + 2.0 * (1.0 - upright))
         standing_pose = env._standing_pose_quality(agent) * upright
         support_center = env._support_center_xy(agent)
@@ -158,6 +159,7 @@ class CombatRewardComputer:
             * approach_phase
         )
         root_height_velocity_down = torch.relu(env._prev_root_height[agent] - root_pos[:, 2]) / max(env.step_dt, 1.0e-6)
+        base_vertical_velocity = torch.square(root_lin_vel_w[:, 2]) * (0.25 + 0.75 * upright)
         contact_intent = env._contact_intent[agent] * facing_gate * upright * env.proxy_reward_scale() * attack_ready
         attack_momentum = env._attack_momentum[agent] * facing_gate * upright * attack_ready * attack_phase
 
@@ -373,6 +375,7 @@ class CombatRewardComputer:
                 + 0.30 * cadence_or_alternating_support
             )
             terms = {
+                "alive_stance": stand_gate * scales.alive * alive_stance,
                 "stand_upright": stand_gate
                 * (scales.standing_height * standing_height + scales.upright_stability * upright),
                 "stand_support": stand_gate
@@ -456,6 +459,7 @@ class CombatRewardComputer:
                     + scales.angular_stumble * angular_stumble
                     + scales.knee_collapse * knee_collapse
                     + scales.root_height_velocity_down * root_height_velocity_down
+                    + scales.base_vertical_velocity * base_vertical_velocity
                     + scales.torso_only_motion * torso_only_motion
                     + scales.backward_lean * backward_lean
                     + scales.backward_motion * backward_motion
@@ -491,6 +495,7 @@ class CombatRewardComputer:
             return RewardBreakdown(total=total, terms=terms)
 
         terms = {
+            "alive_stance": scales.alive * alive_stance,
             "upright_stability": scales.upright_stability * upright,
             "balance_recovery": scales.balance_recovery * balance_recovery,
             "standing_height": scales.standing_height * standing_height,
@@ -537,6 +542,7 @@ class CombatRewardComputer:
             "foot_plant_during_push": scales.foot_plant_during_push * foot_plant_during_push,
             "motion_prior": scales.motion_prior * motion_prior,
             "root_height_velocity_down": -scales.root_height_velocity_down * root_height_velocity_down,
+            "base_vertical_velocity": -scales.base_vertical_velocity * base_vertical_velocity,
             "torso_only_motion": -scales.torso_only_motion * torso_only_motion,
             "unstable_attack": -scales.unstable_attack * unstable_attack,
             "collapse_contact_credit": -scales.collapse_contact_credit * collapse_contact_credit,

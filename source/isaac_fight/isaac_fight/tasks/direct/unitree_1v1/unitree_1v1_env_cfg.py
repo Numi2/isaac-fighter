@@ -237,6 +237,7 @@ class RewardScalesCfg:
     """Reward weights. All penalties are configured as positive magnitudes."""
 
     profile: str = "full_combat"
+    alive: float = 1.00
     upright_stability: float = 0.03
     balance_recovery: float = 0.03
     standing_height: float = 2.50
@@ -289,6 +290,7 @@ class RewardScalesCfg:
     torso_first_contact: float = 8.00
     motion_prior: float = 1.0
     root_height_velocity_down: float = 2.60
+    base_vertical_velocity: float = 1.20
     torso_only_motion: float = 3.20
     contact_intent: float = 2.20
     attack_momentum: float = 2.80

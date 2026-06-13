@@ -73,6 +73,9 @@ parser.add_argument("--residual_late_leg_action_scale", type=float, default=None
 parser.add_argument("--residual_late_waist_action_scale", type=float, default=None)
 parser.add_argument("--residual_late_arm_action_scale", type=float, default=None)
 parser.add_argument("--residual_late_other_action_scale", type=float, default=None)
+parser.add_argument("--residual_scale_ramp_start_step", type=int, default=None)
+parser.add_argument("--residual_scale_ramp_end_step", type=int, default=None)
+parser.add_argument("--residual_active_after_warmup", action=argparse.BooleanOptionalAction, default=None)
 parser.add_argument("--motion_prior_artifact", type=str, default=None)
 parser.add_argument("--motion_prior_discriminator", type=str, default=None)
 parser.add_argument("--motion_prior_reward_scale", type=float, default=0.0)
@@ -165,7 +168,7 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
         refresh_spaces = True
         env_cfg.decimation = 3
         env_cfg.sim.render_interval = env_cfg.decimation
-        env_cfg.episode_length_s = 6.0 if stand_shove_only else 6.5
+        env_cfg.episode_length_s = 6.0 if stand_shove_only else 8.0
         env_cfg.arena.radius = 1.65
         env_cfg.rules.knockout_grace_s = max(float(env_cfg.rules.knockout_grace_s), 1.35)
         env_cfg.fighter_a.spawn_xy = (-0.50, -0.08)
@@ -190,12 +193,14 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
         env_cfg.contact.attack_memory_s = 0.65
         env_cfg.contact.fall_credit_min_attack = 0.08
         env_cfg.curriculum.enabled = True
-        env_cfg.curriculum.standing_warmup_s = max(float(env_cfg.curriculum.standing_warmup_s), 2.25)
+        env_cfg.curriculum.standing_warmup_s = max(
+            float(env_cfg.curriculum.standing_warmup_s), 2.25 if stand_shove_only else 2.75
+        )
         env_cfg.curriculum.action_hold_s = max(
-            float(env_cfg.curriculum.action_hold_s), 1.20 if not stand_shove_only else 1.55
+            float(env_cfg.curriculum.action_hold_s), 1.40 if not stand_shove_only else 1.55
         )
         env_cfg.curriculum.action_ramp_s = max(
-            float(env_cfg.curriculum.action_ramp_s), 1.10 if not stand_shove_only else 1.45
+            float(env_cfg.curriculum.action_ramp_s), 1.35 if not stand_shove_only else 1.45
         )
         env_cfg.curriculum.fall_recovery_enabled = not stand_shove_only
         env_cfg.curriculum.fall_recovery_window_s = max(float(env_cfg.curriculum.fall_recovery_window_s), 1.60)
@@ -207,35 +212,25 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
         env_cfg.curriculum.min_proxy_gain = max(
             float(env_cfg.curriculum.min_proxy_gain), 0.10 if stand_shove_only else 0.20
         )
-        env_cfg.curriculum.stand_phase_steps = (
-            10_000 if stand_shove_only else min(int(env_cfg.curriculum.stand_phase_steps), 6_000)
-        )
-        env_cfg.curriculum.approach_phase_steps = (
-            24_000 if stand_shove_only else min(int(env_cfg.curriculum.approach_phase_steps), 14_000)
-        )
-        env_cfg.curriculum.hand_push_phase_steps = (
-            64_000 if stand_shove_only else min(int(env_cfg.curriculum.hand_push_phase_steps), 28_000)
-        )
-        env_cfg.curriculum.body_slam_phase_steps = (
-            1_000_000 if stand_shove_only else min(int(env_cfg.curriculum.body_slam_phase_steps), 48_000)
-        )
-        env_cfg.curriculum.full_fight_phase_steps = (
-            1_200_000 if stand_shove_only else min(int(env_cfg.curriculum.full_fight_phase_steps), 80_000)
-        )
+        env_cfg.curriculum.stand_phase_steps = 10_000 if stand_shove_only else 12_000
+        env_cfg.curriculum.approach_phase_steps = 24_000 if stand_shove_only else 32_000
+        env_cfg.curriculum.hand_push_phase_steps = 64_000 if stand_shove_only else 72_000
+        env_cfg.curriculum.body_slam_phase_steps = 1_000_000 if stand_shove_only else 120_000
+        env_cfg.curriculum.full_fight_phase_steps = 1_200_000 if stand_shove_only else 180_000
         env_cfg.curriculum.phase_min_stance_quality = max(
-            float(env_cfg.curriculum.phase_min_stance_quality), 0.62 if stand_shove_only else 0.55
+            float(env_cfg.curriculum.phase_min_stance_quality), 0.62 if stand_shove_only else 0.68
         )
         env_cfg.curriculum.phase_min_support_quality = max(
-            float(env_cfg.curriculum.phase_min_support_quality), 0.55 if stand_shove_only else 0.50
+            float(env_cfg.curriculum.phase_min_support_quality), 0.55 if stand_shove_only else 0.58
         )
         if stand_shove_only:
             env_cfg.curriculum.fall_recovery_reset_probability = 0.0
         else:
             env_cfg.curriculum.fall_recovery_reset_probability = max(
-                float(env_cfg.curriculum.fall_recovery_reset_probability), 0.12
+                float(env_cfg.curriculum.fall_recovery_reset_probability), 0.08
             )
-        env_cfg.curriculum.fall_recovery_reset_start_step = min(
-            int(env_cfg.curriculum.fall_recovery_reset_start_step), 12_000
+        env_cfg.curriculum.fall_recovery_reset_start_step = (
+            12_000 if stand_shove_only else max(int(env_cfg.curriculum.fall_recovery_reset_start_step), 48_000)
         )
         env_cfg.perturbations.enabled = not stand_shove_only
         env_cfg.perturbations.probability = max(
@@ -243,19 +238,19 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
         )
         env_cfg.perturbations.start_step = max(
             int(getattr(env_cfg.perturbations, "start_step", 0)),
-            int(env_cfg.curriculum.stand_phase_steps),
+            1_000_000 if stand_shove_only else int(env_cfg.curriculum.hand_push_phase_steps),
         )
         env_cfg.perturbations.ramp_end_step = max(
             int(getattr(env_cfg.perturbations, "ramp_end_step", 0)),
-            int(env_cfg.curriculum.hand_push_phase_steps),
+            1_000_000 if stand_shove_only else int(env_cfg.curriculum.body_slam_phase_steps),
         )
         env_cfg.perturbations.min_history_stance = max(
             float(getattr(env_cfg.perturbations, "min_history_stance", 0.0)),
-            0.45,
+            0.62 if not stand_shove_only else 0.45,
         )
         env_cfg.perturbations.min_history_support = max(
             float(getattr(env_cfg.perturbations, "min_history_support", 0.0)),
-            0.40,
+            0.55 if not stand_shove_only else 0.40,
         )
         env_cfg.perturbations.time_min_s = min(float(env_cfg.perturbations.time_min_s), 0.45)
         env_cfg.perturbations.time_max_s = max(float(env_cfg.perturbations.time_max_s), 2.20)
@@ -266,13 +261,16 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
         env_cfg.perturbations.recovery_window_s = max(float(env_cfg.perturbations.recovery_window_s), 1.50)
         env_cfg.observations_cfg.temporal_memory_s = max(float(env_cfg.observations_cfg.temporal_memory_s), 0.55)
         env_cfg.adr.enabled = not stand_shove_only
-        env_cfg.adr.start_step = max(int(env_cfg.adr.start_step), 20_000)
+        env_cfg.adr.start_step = max(int(env_cfg.adr.start_step), 140_000 if not stand_shove_only else 1_000_000)
+        env_cfg.adr.min_history_stance = max(float(env_cfg.adr.min_history_stance), 0.66)
+        env_cfg.adr.min_history_support = max(float(env_cfg.adr.min_history_support), 0.58)
         env_cfg.self_play.opponent_update_interval = min(int(env_cfg.self_play.opponent_update_interval), 160)
         env_cfg.self_play.live_self_play_fraction = max(float(env_cfg.self_play.live_self_play_fraction), 0.45)
         env_cfg.self_play.league_training_enabled = not stand_shove_only
         env_cfg.self_play.league_role = league_role
         env_cfg.rewards.profile = "stand_shove_bootstrap"
         env_cfg.rewards.contact_intent = max(float(env_cfg.rewards.contact_intent), 2.8)
+        env_cfg.rewards.alive = max(float(env_cfg.rewards.alive), 7.0 if not stand_shove_only else 9.0)
         env_cfg.rewards.standing_height = max(float(env_cfg.rewards.standing_height), 18.0)
         env_cfg.rewards.support_contact = max(float(env_cfg.rewards.support_contact), 9.0)
         env_cfg.rewards.low_base_height = max(float(env_cfg.rewards.low_base_height), 80.0)
@@ -323,6 +321,7 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
         env_cfg.rewards.forward_collapse = max(float(env_cfg.rewards.forward_collapse), 24.0)
         env_cfg.rewards.torso_first_contact = max(float(env_cfg.rewards.torso_first_contact), 22.0)
         env_cfg.rewards.root_height_velocity_down = max(float(env_cfg.rewards.root_height_velocity_down), 25.0)
+        env_cfg.rewards.base_vertical_velocity = max(float(env_cfg.rewards.base_vertical_velocity), 7.0)
         env_cfg.rewards.torso_only_motion = max(float(env_cfg.rewards.torso_only_motion), 24.0)
         env_cfg.rewards.attack_momentum = max(float(env_cfg.rewards.attack_momentum), 3.4)
         env_cfg.rewards.stable_contact_attack = max(float(env_cfg.rewards.stable_contact_attack), 5.0)
@@ -376,6 +375,7 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
             env_cfg.rewards.foot_support_quality = max(float(env_cfg.rewards.foot_support_quality), 16.0)
             env_cfg.rewards.base_pitch_roll = max(float(env_cfg.rewards.base_pitch_roll), 34.0)
             env_cfg.rewards.root_height_velocity_down = max(float(env_cfg.rewards.root_height_velocity_down), 36.0)
+            env_cfg.rewards.base_vertical_velocity = max(float(env_cfg.rewards.base_vertical_velocity), 9.0)
             env_cfg.rewards.forward_collapse = max(float(env_cfg.rewards.forward_collapse), 42.0)
             env_cfg.rewards.collapse_contact_credit = max(float(env_cfg.rewards.collapse_contact_credit), 44.0)
             env_cfg.rewards.torso_first_contact = max(float(env_cfg.rewards.torso_first_contact), 36.0)
@@ -575,6 +575,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             value = getattr(args_cli, arg_name)
             if value is not None:
                 setattr(env_cfg.residual_locomotion, arg_name, value)
+        if args_cli.residual_scale_ramp_start_step is not None:
+            env_cfg.residual_locomotion.residual_scale_ramp_start_step = args_cli.residual_scale_ramp_start_step
+        if args_cli.residual_scale_ramp_end_step is not None:
+            env_cfg.residual_locomotion.residual_scale_ramp_end_step = args_cli.residual_scale_ramp_end_step
+        if args_cli.residual_active_after_warmup is not None:
+            env_cfg.residual_locomotion.active_after_warmup = args_cli.residual_active_after_warmup
     if args_cli.motion_prior_artifact and hasattr(env_cfg, "motion_prior"):
         env_cfg.motion_prior.enabled = True
         env_cfg.motion_prior.artifact_path = args_cli.motion_prior_artifact
@@ -642,7 +648,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "algorithm": algorithm.upper(),
             "task": args_cli.task,
             "seed": args_cli.seed,
-            "reward_version": "privileged_phase_amp_league_recovery_v18_perturb_ramp",
+            "reward_version": "privileged_phase_amp_league_recovery_v20_stability_prior",
             "league_role": args_cli.league_role,
             "config_hash": hashlib.sha256(
                 json.dumps(
