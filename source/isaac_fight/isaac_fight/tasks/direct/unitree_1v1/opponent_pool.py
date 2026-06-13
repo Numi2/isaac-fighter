@@ -67,12 +67,37 @@ class PolicyVersion:
                 return tag
         return "main"
 
+    @property
+    def league_status(self) -> str:
+        status = self.metadata.get("league_status") if isinstance(self.metadata, dict) else None
+        if isinstance(status, str) and status:
+            return status
+        if "league_suppressed" in self.tags:
+            return "suppressed"
+        if "league_promoted" in self.tags:
+            return "promoted"
+        return "candidate"
+
+    @property
+    def league_promotion_score(self) -> float:
+        if not isinstance(self.metadata, dict):
+            return 0.0
+        summary = self.metadata.get("league_eval")
+        if not isinstance(summary, dict):
+            return 0.0
+        try:
+            return float(summary.get("promotion_score", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
     def to_json(self) -> dict:
         data = asdict(self)
         data["win_rate"] = self.win_rate
         data["loss_rate"] = self.loss_rate
         data["draw_rate"] = self.draw_rate
         data["weakness_score"] = self.weakness_score
+        data["league_status"] = self.league_status
+        data["league_promotion_score"] = self.league_promotion_score
         return data
 
     @classmethod
@@ -232,6 +257,10 @@ class OpponentPool:
             weight += latest_bias * recency
             if role_totals:
                 weight *= role_exploration + max(float(role_totals.get(p.league_role, 0.0)), 0.0)
+            if p.league_status == "promoted":
+                weight *= 1.25 + 0.15 * max(p.league_promotion_score, 0.0)
+            elif p.league_status == "suppressed":
+                weight *= 0.05
             if pfsp_hard_bias > 0.0:
                 hard_opponent = (1.0 - p.win_rate) ** 2 if p.games else 0.65
                 weight = (1.0 - pfsp_hard_bias) * weight + pfsp_hard_bias * max(hard_opponent, 1.0e-6)

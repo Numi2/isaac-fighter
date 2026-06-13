@@ -16,7 +16,8 @@ The opponent sampler filters by Elo range and scores candidates using weakness, 
 weights. Main runs therefore see a mix of current snapshots and specialist exploiters instead of only the latest mirror.
 Tournament evaluation runs round-robin matches between compatible policies and writes a JSON result with Elo updates,
 fight-health summaries, and promotion scores. Pass `--promote_to_league` to write `league_promoted` or
-`league_suppressed` tags plus the evaluation summary back into `policy_pool/pool.json`.
+`league_suppressed` tags plus the evaluation summary back into `policy_pool/pool.json`. The opponent sampler upweights
+promoted policies and heavily downweights suppressed policies, so evaluation results directly shape future rollouts.
 
 League roles:
 
@@ -24,6 +25,12 @@ League roles:
 - `shove_exploiter`: emphasizes selected-hand shove contact and support breaking.
 - `body_slam_exploiter`: emphasizes torso charge and drive pressure while preserving mutual-fall penalties.
 - `balance_breaker`: emphasizes tilt/topple/support-break pressure.
+
+Automation:
+
+- Use `scripts/tools/run_league_cycle.py` to run a main/exploiter train sequence followed by tournament promotion.
+- Run without `--execute` first to print the exact Isaac Lab commands; add `--execute` inside the Isaac Lab/Brev shell
+  once the commands look right.
 
 Residual locomotion:
 

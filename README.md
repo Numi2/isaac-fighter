@@ -135,6 +135,19 @@ Keep the pool synchronized while long training runs continue:
   --interval_s 60
 ```
 
+Run a complete main/exploiter league cycle and promote by tournament health:
+
+```bash
+./isaaclab.sh -p /path/to/isaac-fight/scripts/tools/run_league_cycle.py \
+  --isaaclab_sh /path/to/IsaacLab/isaaclab.sh \
+  --pool_dir /path/to/isaac-fight/policy_pool \
+  --checkpoint /path/to/current_best.pt \
+  --residual_locomotion_checkpoint /path/to/g1_velocity_to_fight.pt \
+  --main_num_envs 4096 \
+  --exploiter_num_envs 1024 \
+  --execute
+```
+
 Resume harder:
 
 ```bash
