@@ -14,8 +14,9 @@ Pool records track:
 
 The opponent sampler filters by Elo range and scores candidates using weakness, uncertainty, recency, and league-role
 weights. Main runs therefore see a mix of current snapshots and specialist exploiters instead of only the latest mirror.
-Tournament evaluation runs round-robin matches between TorchScript policies and writes a JSON result with Elo updates and
-match metrics.
+Tournament evaluation runs round-robin matches between compatible policies and writes a JSON result with Elo updates,
+fight-health summaries, and promotion scores. Pass `--promote_to_league` to write `league_promoted` or
+`league_suppressed` tags plus the evaluation summary back into `policy_pool/pool.json`.
 
 League roles:
 
@@ -29,8 +30,13 @@ Residual locomotion:
 - Pass `--residual_locomotion_checkpoint PATH` to compose a frozen G1 locomotion/warm-start policy with trainable fight
   residual actions.
 - Use `--residual_action_scale` to keep combat residuals small while the base policy preserves standing/walking.
+- Residual actions are joint-aware: legs/waist are capped conservatively during bootstrap, arms get larger residual
+  authority, and legs can open later after stability.
 
 Bootstrap artifacts:
 
 - Use `scripts/tools/locomotion_bootstrap.py warmstart` for Unitree velocity checkpoints.
 - Use `scripts/tools/locomotion_bootstrap.py motion-prior` for Unitree mimic/AMP `.npz` motion files.
+- Use `scripts/tools/export_amp_rollout_features.py` to collect policy-generated AMP feature negatives.
+- Use `scripts/tools/train_amp_discriminator.py` to train a discriminator from reference motion positives and rollout
+  negatives, then pass it to training with `--motion_prior_discriminator`.

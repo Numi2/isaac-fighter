@@ -17,13 +17,13 @@ from isaaclab.assets import Articulation
 from isaaclab.envs import DirectMARLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from torch import nn
 
 from isaac_fight.assets.robots.unitree import (
     get_controlled_joint_names_from_cfg_or_spec,
     get_unitree_robot_cfg,
     get_unitree_robot_spec,
 )
+from isaac_fight.motion_prior.amp import MotionPriorDiscriminator, amp_feature_dim
 from isaac_fight.utils.torch_math import (
     normalize,
     quat_apply_inverse,
@@ -68,24 +68,6 @@ SUPPORT_BODY_TOKENS = ("foot", "ankle", "toe", "sole")
 PUSH_HAND_BODY_TOKENS = ("hand", "wrist", "palm", "finger", "lower_arm", "elbow")
 
 
-class MotionPriorDiscriminator(nn.Module):
-    """Small MLP fallback for AMP-style discriminator checkpoints."""
-
-    def __init__(self, input_dim: int, hidden_dims: tuple[int, ...]):
-        super().__init__()
-        layers: list[nn.Module] = []
-        last_dim = int(input_dim)
-        for hidden_dim in hidden_dims:
-            layers.append(nn.Linear(last_dim, int(hidden_dim)))
-            layers.append(nn.ELU())
-            last_dim = int(hidden_dim)
-        layers.append(nn.Linear(last_dim, 1))
-        self.net = nn.Sequential(*layers)
-
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
-        return self.net(features)
-
-
 class GhostFighterUnitree1v1Env(DirectMARLEnv):
     """Two-humanoid combat environment using Isaac Lab DirectMARLEnv.
 
@@ -128,7 +110,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._posture_action_id_tensors: dict[str, torch.Tensor] = {}
         self._action_scale_tensors: dict[str, torch.Tensor] = {}
         self._motion_prior_data: dict[str, Any] | None = None
-        self._motion_prior_discriminator: nn.Module | None = None
+        self._motion_prior_discriminator: torch.nn.Module | None = None
         self._motion_prior_discriminator_failed = False
         self._motion_prior_frame_count = 0
         self._resolve_controlled_joints()
@@ -2188,8 +2170,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         return torch.mean(torch.square(self._actions[agent].index_select(1, leg_ids)), dim=-1)
 
     def _motion_prior_amp_feature_dim(self, agent: str) -> int:
-        action_dim = self._runtime[agent].action_dim
-        return action_dim * 2 + 11
+        return amp_feature_dim(self._runtime[agent].action_dim)
 
     def _motion_prior_reward(self, agent: str, opponent: str) -> torch.Tensor:
         motion_prior = getattr(self.cfg, "motion_prior", None)

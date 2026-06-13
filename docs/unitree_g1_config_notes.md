@@ -24,3 +24,5 @@ Isaac Fight implications:
 - Prefer residual combat learning on top of a frozen locomotion/warm-start policy before training full-body combat from
   random initialization.
 - Treat Unitree mimic `.npz` motion files as AMP/motion-prior bootstrap artifacts, not opponent policies.
+- Train AMP discriminators against actual failed/current rollout features from `export_amp_rollout_features.py`; synthetic
+  negatives from `train_amp_discriminator.py` are a fast cold-start fallback, not the final style signal.

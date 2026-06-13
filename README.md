@@ -24,6 +24,7 @@ The default fight is Unitree G1-29DoF vs H1. Robot physics, meshes, actuators, j
 - Reward stack: upright control, balance recovery, approach pressure, arena control, useful contact, opponent destabilization, opponent knockdown, terminal win/loss/draw.
 - Penalty stack: self-fall, boundary loss, torque/action effort, joint-limit pressure, jitter, inactivity, spin-without-contact, uncontrolled collision.
 - Population tooling: checkpoint pool, Elo metadata, weakness/recency sampler, tournament script, replay JSONL.
+- Motion-prior tooling: G1 mimic feature parsing, rollout AMP feature export, discriminator training, and runtime AMP reward inference.
 
 ## Roadmap
 
@@ -79,6 +80,52 @@ Self-play is closed-loop by default: checkpoints are synced into `policy_pool` d
 
 Use `--launch_preset full_fight_self_play` for 30s rounds, the larger arena, wider spawns, and no bootstrap timeout after the policies are reliably making contact.
 
+Fast G1 combat bootstrap should stay residual over a locomotion base first:
+
+```bash
+./isaaclab.sh -p /path/to/isaac-fight/scripts/skrl/train.py \
+  --task GhostFighter-Unitree-1v1-Direct-v0 \
+  --algorithm IPPO \
+  --launch_preset fast_contact_bootstrap \
+  --num_envs 8192 \
+  --checkpoint /path/to/g1_velocity_to_fight.pt \
+  --residual_locomotion_checkpoint /path/to/g1_velocity_to_fight.pt \
+  --residual_base_action_scale 1.0 \
+  --residual_action_scale 0.08 \
+  --snapshot_interval 256 \
+  --no_self_play \
+  --no_historical_opponent \
+  --headless
+```
+
+AMP/mimic bootstrap loop:
+
+```bash
+./isaaclab.sh -p /path/to/isaac-fight/scripts/tools/export_amp_rollout_features.py \
+  --checkpoint /path/to/current_fight_checkpoint.pt \
+  --residual_locomotion_checkpoint /path/to/g1_velocity_to_fight.pt \
+  --num_envs 512 \
+  --steps 1024 \
+  --output /path/to/amp/rollout_negatives.pt \
+  --headless
+
+python /path/to/isaac-fight/scripts/tools/train_amp_discriminator.py \
+  --motion_prior_artifact /path/to/unitree_g1_mimic_motion.npz \
+  --negative_features /path/to/amp/rollout_negatives.pt \
+  --output /path/to/amp/g1_amp_discriminator.pt
+
+./isaaclab.sh -p /path/to/isaac-fight/scripts/skrl/train.py \
+  --task GhostFighter-Unitree-1v1-Direct-v0 \
+  --algorithm IPPO \
+  --launch_preset fast_contact_bootstrap \
+  --motion_prior_artifact /path/to/unitree_g1_mimic_motion.npz \
+  --motion_prior_discriminator /path/to/amp/g1_amp_discriminator.pt \
+  --motion_prior_reward_scale 1.0 \
+  --motion_prior_amp_reward_weight 1.0 \
+  --motion_prior_mimic_reward_weight 0.35 \
+  --headless
+```
+
 Keep the pool synchronized while long training runs continue:
 
 ```bash
@@ -108,6 +155,7 @@ Resume harder:
   --task GhostFighter-Unitree-1v1-Direct-v0 \
   --pool_dir /path/to/isaac-fight/policy_pool \
   --rounds 32 \
+  --promote_to_league \
   --output /path/to/isaac-fight/logs/tournaments/latest.json
 ```
 
