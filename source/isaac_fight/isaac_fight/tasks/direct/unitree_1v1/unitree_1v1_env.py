@@ -17,6 +17,7 @@ from isaaclab.assets import Articulation
 from isaaclab.envs import DirectMARLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
+from torch import nn
 
 from isaac_fight.assets.robots.unitree import (
     get_controlled_joint_names_from_cfg_or_spec,
@@ -67,6 +68,24 @@ SUPPORT_BODY_TOKENS = ("foot", "ankle", "toe", "sole")
 PUSH_HAND_BODY_TOKENS = ("hand", "wrist", "palm", "finger", "lower_arm", "elbow")
 
 
+class MotionPriorDiscriminator(nn.Module):
+    """Small MLP fallback for AMP-style discriminator checkpoints."""
+
+    def __init__(self, input_dim: int, hidden_dims: tuple[int, ...]):
+        super().__init__()
+        layers: list[nn.Module] = []
+        last_dim = int(input_dim)
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(last_dim, int(hidden_dim)))
+            layers.append(nn.ELU())
+            last_dim = int(hidden_dim)
+        layers.append(nn.Linear(last_dim, 1))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        return self.net(features)
+
+
 class GhostFighterUnitree1v1Env(DirectMARLEnv):
     """Two-humanoid combat environment using Isaac Lab DirectMARLEnv.
 
@@ -109,6 +128,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._posture_action_id_tensors: dict[str, torch.Tensor] = {}
         self._action_scale_tensors: dict[str, torch.Tensor] = {}
         self._motion_prior_data: dict[str, Any] | None = None
+        self._motion_prior_discriminator: nn.Module | None = None
+        self._motion_prior_discriminator_failed = False
         self._motion_prior_frame_count = 0
         self._resolve_controlled_joints()
         self._allocate_buffers()
@@ -483,7 +504,12 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         cfg = self.cfg.motion_prior
         self._motion_prior_data = None
         self._motion_prior_frame_count = 0
-        if not cfg.enabled or not cfg.artifact_path:
+        self._motion_prior_discriminator = None
+        self._motion_prior_discriminator_failed = False
+        if not cfg.enabled:
+            return
+        self._load_motion_prior_discriminator()
+        if not cfg.artifact_path:
             return
         path = Path(cfg.artifact_path).expanduser()
         if not path.exists():
@@ -615,6 +641,47 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             return tensor[:, :action_dim]
         pad = torch.zeros(tensor.shape[0], action_dim - tensor.shape[-1], device=self.device, dtype=tensor.dtype)
         return torch.cat((tensor, pad), dim=-1)
+
+    def _load_motion_prior_discriminator(self) -> None:
+        path_value = str(getattr(self.cfg.motion_prior, "discriminator_path", "") or "")
+        if not path_value:
+            return
+        path = Path(path_value).expanduser()
+        if not path.exists():
+            print(f"[WARN] Motion prior discriminator does not exist: {path}", flush=True)
+            return
+        input_dim = self._motion_prior_amp_feature_dim(FIGHTER_A)
+        try:
+            try:
+                module = torch.jit.load(str(path), map_location=self.device)
+            except Exception:
+                payload = torch.load(path, map_location=self.device)
+                state_dict = self._motion_prior_discriminator_state_dict(payload)
+                if state_dict is None:
+                    raise TypeError("checkpoint does not contain a discriminator state_dict")
+                module = MotionPriorDiscriminator(
+                    input_dim,
+                    tuple(int(dim) for dim in self.cfg.motion_prior.discriminator_hidden_dims),
+                ).to(self.device)
+                cleaned = {key.removeprefix("module.").removeprefix("discriminator."): value for key, value in state_dict.items()}
+                module.load_state_dict(cleaned, strict=False)
+            module.to(self.device)
+            module.eval()
+            self._motion_prior_discriminator = module
+            print(f"[INFO] Loaded AMP motion-prior discriminator {path}.", flush=True)
+        except Exception as exc:  # noqa: BLE001 - discriminator is optional bootstrap machinery.
+            print(f"[WARN] Could not load AMP motion-prior discriminator {path}: {exc}", flush=True)
+            self._motion_prior_discriminator = None
+
+    def _motion_prior_discriminator_state_dict(self, payload: Any) -> dict[str, torch.Tensor] | None:
+        if isinstance(payload, dict):
+            for key in ("state_dict", "model_state_dict", "discriminator_state_dict", "discriminator"):
+                value = payload.get(key)
+                if isinstance(value, dict):
+                    return value
+            if payload and all(isinstance(value, torch.Tensor) for value in payload.values()):
+                return payload
+        return None
 
     def _pre_physics_step(self, actions: dict[str, torch.Tensor]) -> None:
         fighter_cfgs = {FIGHTER_A: self.cfg.fighter_a, FIGHTER_B: self.cfg.fighter_b}
@@ -2120,54 +2187,106 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             return torch.zeros(self.num_envs, device=self.device)
         return torch.mean(torch.square(self._actions[agent].index_select(1, leg_ids)), dim=-1)
 
+    def _motion_prior_amp_feature_dim(self, agent: str) -> int:
+        action_dim = self._runtime[agent].action_dim
+        return action_dim * 2 + 11
+
     def _motion_prior_reward(self, agent: str, opponent: str) -> torch.Tensor:
         motion_prior = getattr(self.cfg, "motion_prior", None)
         if motion_prior is None or not motion_prior.enabled or motion_prior.reward_scale <= 0.0:
             return torch.zeros(self.num_envs, device=self.device)
+        mimic_reward = torch.zeros(self.num_envs, device=self.device)
         data = self._motion_prior_data
         frame_count = int(self._motion_prior_frame_count)
-        if data is None or frame_count <= 0:
-            return torch.zeros(self.num_envs, device=self.device)
-
-        frame_idx = (self._motion_prior_phase[agent] + self.episode_length_buf.long()) % frame_count
-        target_joint_pos = data["joint_pos"][agent].index_select(0, frame_idx)
-        if data["joint_pos_relative"]:
-            current_joint_pos = self.joint_pos_rel(agent)
-        else:
-            ids = self._runtime[agent].joint_ids
-            current_joint_pos = self.robots[agent].data.joint_pos[:, ids]
-        pose_sigma = max(float(motion_prior.pose_sigma), 1.0e-6)
-        pose_reward = torch.exp(-torch.mean(torch.square((current_joint_pos - target_joint_pos) / pose_sigma), dim=-1))
-
-        velocity_reward = torch.zeros(self.num_envs, device=self.device)
-        target_joint_vel_by_agent = data.get("joint_vel")
-        if target_joint_vel_by_agent is not None:
-            target_joint_vel_data = target_joint_vel_by_agent[agent]
-            target_joint_vel = target_joint_vel_data.index_select(0, frame_idx % int(target_joint_vel_data.shape[0]))
-            velocity_sigma = max(float(motion_prior.velocity_sigma), 1.0e-6)
-            velocity_reward = torch.exp(
-                -torch.mean(torch.square((self.joint_vel(agent) - target_joint_vel) / velocity_sigma), dim=-1)
+        if data is not None and frame_count > 0:
+            frame_idx = (self._motion_prior_phase[agent] + self.episode_length_buf.long()) % frame_count
+            target_joint_pos = data["joint_pos"][agent].index_select(0, frame_idx)
+            if data["joint_pos_relative"]:
+                current_joint_pos = self.joint_pos_rel(agent)
+            else:
+                ids = self._runtime[agent].joint_ids
+                current_joint_pos = self.robots[agent].data.joint_pos[:, ids]
+            pose_sigma = max(float(motion_prior.pose_sigma), 1.0e-6)
+            pose_reward = torch.exp(
+                -torch.mean(torch.square((current_joint_pos - target_joint_pos) / pose_sigma), dim=-1)
             )
 
-        root_height_reward = torch.zeros(self.num_envs, device=self.device)
-        target_root_height = data.get("root_height")
-        if target_root_height is not None:
-            height_idx = frame_idx % int(target_root_height.shape[0])
-            height_sigma = max(float(motion_prior.root_height_sigma), 1.0e-6)
-            root_height_reward = torch.exp(
-                -torch.square((self.root_pos(agent)[:, 2] - target_root_height.index_select(0, height_idx)) / height_sigma)
+            velocity_reward = torch.zeros(self.num_envs, device=self.device)
+            target_joint_vel_by_agent = data.get("joint_vel")
+            if target_joint_vel_by_agent is not None:
+                target_joint_vel_data = target_joint_vel_by_agent[agent]
+                target_joint_vel = target_joint_vel_data.index_select(0, frame_idx % int(target_joint_vel_data.shape[0]))
+                velocity_sigma = max(float(motion_prior.velocity_sigma), 1.0e-6)
+                velocity_reward = torch.exp(
+                    -torch.mean(torch.square((self.joint_vel(agent) - target_joint_vel) / velocity_sigma), dim=-1)
+                )
+
+            root_height_reward = torch.zeros(self.num_envs, device=self.device)
+            target_root_height = data.get("root_height")
+            if target_root_height is not None:
+                height_idx = frame_idx % int(target_root_height.shape[0])
+                height_sigma = max(float(motion_prior.root_height_sigma), 1.0e-6)
+                root_height_reward = torch.exp(
+                    -torch.square(
+                        (self.root_pos(agent)[:, 2] - target_root_height.index_select(0, height_idx)) / height_sigma
+                    )
+                )
+
+            upright_reward = torch.clamp(self._up_z[agent], 0.0, 1.0)
+            support_reward = self._support_quality(agent)
+            mimic_reward = (
+                float(motion_prior.pose_weight) * pose_reward
+                + float(motion_prior.velocity_weight) * velocity_reward
+                + float(motion_prior.root_height_weight) * root_height_reward
+                + float(motion_prior.upright_weight) * upright_reward
+                + float(motion_prior.support_weight) * support_reward
             )
 
-        upright_reward = torch.clamp(self._up_z[agent], 0.0, 1.0)
-        support_reward = self._support_quality(agent)
+        amp_reward = self._motion_prior_amp_discriminator_reward(agent)
         reward = (
-            float(motion_prior.pose_weight) * pose_reward
-            + float(motion_prior.velocity_weight) * velocity_reward
-            + float(motion_prior.root_height_weight) * root_height_reward
-            + float(motion_prior.upright_weight) * upright_reward
-            + float(motion_prior.support_weight) * support_reward
+            float(motion_prior.mimic_reward_weight) * mimic_reward
+            + float(motion_prior.amp_reward_weight) * amp_reward
         )
         return float(motion_prior.reward_scale) * torch.clamp(reward, 0.0, 2.0)
+
+    def _motion_prior_amp_features(self, agent: str) -> torch.Tensor:
+        height_ratio = self.root_pos(agent)[:, 2:3] / max(self._runtime[agent].default_base_height, 1.0e-6)
+        return torch.cat(
+            (
+                torch.clamp(self.joint_pos_rel(agent), -5.0, 5.0),
+                torch.clamp(self.joint_vel(agent) * self.cfg.observations_cfg.joint_velocity_scale, -5.0, 5.0),
+                torch.clamp(self.root_lin_vel_b(agent) * self.cfg.observations_cfg.base_linear_velocity_scale, -5.0, 5.0),
+                torch.clamp(self.root_ang_vel_b(agent) * self.cfg.observations_cfg.base_angular_velocity_scale, -5.0, 5.0),
+                self.projected_gravity_b(agent),
+                torch.clamp(height_ratio, 0.0, 3.0),
+                torch.clamp(self._support_quality(agent).unsqueeze(-1), 0.0, 1.0),
+                torch.clamp(self._up_z[agent].unsqueeze(-1), -1.0, 1.0),
+            ),
+            dim=-1,
+        )
+
+    def _motion_prior_amp_discriminator_reward(self, agent: str) -> torch.Tensor:
+        discriminator = self._motion_prior_discriminator
+        if discriminator is None or self._motion_prior_discriminator_failed:
+            return torch.zeros(self.num_envs, device=self.device)
+        try:
+            with torch.no_grad():
+                output = discriminator(self._motion_prior_amp_features(agent))
+            if isinstance(output, dict):
+                output = output.get("logits", output.get("score", next(iter(output.values()))))
+            if isinstance(output, tuple):
+                output = output[0]
+            output = torch.as_tensor(output, device=self.device, dtype=torch.float32).reshape(self.num_envs, -1)[:, 0]
+            if bool(getattr(self.cfg.motion_prior, "discriminator_output_is_probability", False)):
+                probability = torch.clamp(output, 0.0, 1.0)
+            else:
+                probability = torch.sigmoid(output)
+            amp_reward = -torch.log(torch.clamp(1.0 - probability, min=1.0e-4))
+            return torch.clamp(amp_reward, 0.0, float(self.cfg.motion_prior.amp_reward_clip))
+        except Exception as exc:  # noqa: BLE001 - disable once; keep long training alive.
+            self._motion_prior_discriminator_failed = True
+            print(f"[WARN] AMP discriminator reward disabled after inference failure: {exc}", flush=True)
+            return torch.zeros(self.num_envs, device=self.device)
 
     def _accumulate_episode_terms(self, agent: str, terms: dict[str, torch.Tensor]) -> None:
         for name, value in terms.items():

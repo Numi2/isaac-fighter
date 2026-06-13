@@ -182,6 +182,22 @@ class OpponentPool:
             policy.elo = elo
         self.save()
 
+    def update_policy_metadata(
+        self,
+        policy_id: str,
+        metadata: dict | None = None,
+        add_tags: Iterable[str] = (),
+        remove_tags: Iterable[str] = (),
+    ) -> None:
+        policy = self._policies[policy_id]
+        if metadata:
+            policy.metadata.update(metadata)
+        tags = set(policy.tags)
+        tags.update(str(tag) for tag in add_tags if str(tag))
+        tags.difference_update(str(tag) for tag in remove_tags if str(tag))
+        policy.tags = tuple(sorted(tags))
+        self.save()
+
     def sample(
         self,
         active_elo: float,

@@ -130,9 +130,15 @@ class MotionPriorCfg:
 
     enabled: bool = False
     artifact_path: str = ""
+    discriminator_path: str = ""
     kind: str = "unitree_g1_mimic_npz"
     source_task: str = "Unitree-G1-29dof-Mimic"
     reward_scale: float = 0.0
+    mimic_reward_weight: float = 1.0
+    amp_reward_weight: float = 1.0
+    amp_reward_clip: float = 2.0
+    discriminator_hidden_dims: tuple[int, ...] = (256, 256)
+    discriminator_output_is_probability: bool = False
     pose_weight: float = 0.50
     velocity_weight: float = 0.25
     root_height_weight: float = 0.15

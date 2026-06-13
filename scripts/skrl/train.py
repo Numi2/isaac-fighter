@@ -74,7 +74,11 @@ parser.add_argument("--residual_late_waist_action_scale", type=float, default=No
 parser.add_argument("--residual_late_arm_action_scale", type=float, default=None)
 parser.add_argument("--residual_late_other_action_scale", type=float, default=None)
 parser.add_argument("--motion_prior_artifact", type=str, default=None)
+parser.add_argument("--motion_prior_discriminator", type=str, default=None)
 parser.add_argument("--motion_prior_reward_scale", type=float, default=0.0)
+parser.add_argument("--motion_prior_mimic_reward_weight", type=float, default=None)
+parser.add_argument("--motion_prior_amp_reward_weight", type=float, default=None)
+parser.add_argument("--motion_prior_discriminator_output_is_probability", action="store_true", default=False)
 parser.add_argument("--enable_pbt", action="store_true", default=False)
 parser.add_argument("--pbt_mutation_seed", type=int, default=0)
 parser.add_argument("--pbt_mutation_scale", type=float, default=0.15)
@@ -497,6 +501,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.motion_prior.artifact_path = args_cli.motion_prior_artifact
         env_cfg.motion_prior.reward_scale = args_cli.motion_prior_reward_scale
         env_cfg.rewards.motion_prior = max(float(env_cfg.rewards.motion_prior), 1.0)
+    if args_cli.motion_prior_discriminator and hasattr(env_cfg, "motion_prior"):
+        env_cfg.motion_prior.enabled = True
+        env_cfg.motion_prior.discriminator_path = args_cli.motion_prior_discriminator
+        env_cfg.motion_prior.reward_scale = args_cli.motion_prior_reward_scale
+        env_cfg.rewards.motion_prior = max(float(env_cfg.rewards.motion_prior), 1.0)
+    if hasattr(env_cfg, "motion_prior"):
+        if args_cli.motion_prior_mimic_reward_weight is not None:
+            env_cfg.motion_prior.mimic_reward_weight = args_cli.motion_prior_mimic_reward_weight
+        if args_cli.motion_prior_amp_reward_weight is not None:
+            env_cfg.motion_prior.amp_reward_weight = args_cli.motion_prior_amp_reward_weight
+        if args_cli.motion_prior_discriminator_output_is_probability:
+            env_cfg.motion_prior.discriminator_output_is_probability = True
     if args_cli.enable_pbt and hasattr(env_cfg, "pbt"):
         env_cfg.pbt.enabled = True
         env_cfg.pbt.mutation_seed = int(args_cli.pbt_mutation_seed)
