@@ -2,6 +2,8 @@
 sequal to the ghostfighter series
 Standalone Isaac Lab extension for emergent 1v1 humanoid combat.
 
+![G1 v18 agent 32768 progress](docs/assets/g1-v18-agent32768-progress.gif)
+
 ![G1 v16 latest checkpoint](docs/assets/g1-v16-agent46080-latest.gif)
 
 ![G1 self-play visual milestone](docs/assets/g1-self-play-milestone-agent3072.gif)
