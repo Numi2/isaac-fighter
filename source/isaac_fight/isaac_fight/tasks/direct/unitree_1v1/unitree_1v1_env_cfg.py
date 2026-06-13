@@ -225,6 +225,14 @@ class CurriculumCfg:
     full_fight_phase_steps: int = 80_000
     phase_min_stance_quality: float = 0.35
     phase_min_support_quality: float = 0.30
+    adaptive_stability_governor_enabled: bool = True
+    stability_governor_global_weight: float = 0.75
+    stability_governor_min_stance: float = 0.50
+    stability_governor_min_support: float = 0.42
+    stability_governor_max_fall_pressure: float = 0.32
+    stability_governor_ramp_width: float = 0.20
+    stability_governor_fall_width: float = 0.20
+    stability_governor_min_phase_gate: float = 0.18
     fall_recovery_reset_probability: float = 0.10
     fall_recovery_reset_start_step: int = 12_000
     fall_recovery_root_height: float = 0.38

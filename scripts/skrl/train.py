@@ -223,6 +223,19 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
         env_cfg.curriculum.phase_min_support_quality = max(
             float(env_cfg.curriculum.phase_min_support_quality), 0.55 if stand_shove_only else 0.58
         )
+        env_cfg.curriculum.adaptive_stability_governor_enabled = True
+        env_cfg.curriculum.stability_governor_global_weight = max(
+            float(env_cfg.curriculum.stability_governor_global_weight), 0.90
+        )
+        env_cfg.curriculum.stability_governor_min_stance = max(
+            float(env_cfg.curriculum.stability_governor_min_stance), 0.58 if stand_shove_only else 0.62
+        )
+        env_cfg.curriculum.stability_governor_min_support = max(
+            float(env_cfg.curriculum.stability_governor_min_support), 0.50 if stand_shove_only else 0.54
+        )
+        env_cfg.curriculum.stability_governor_max_fall_pressure = min(
+            float(env_cfg.curriculum.stability_governor_max_fall_pressure), 0.28
+        )
         if stand_shove_only:
             env_cfg.curriculum.fall_recovery_reset_probability = 0.0
         else:

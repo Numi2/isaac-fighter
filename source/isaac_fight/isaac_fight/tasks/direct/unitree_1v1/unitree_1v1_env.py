@@ -421,6 +421,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._history_push_activity = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._global_stance_quality_ema = {agent: torch.zeros((), device=device) for agent in FIGHTERS}
         self._global_support_quality_ema = {agent: torch.zeros((), device=device) for agent in FIGHTERS}
+        self._global_fall_pressure_ema = {agent: torch.zeros((), device=device) for agent in FIGHTERS}
         self._energy = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._energy_ema = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._torque_penalty = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
@@ -1723,6 +1724,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             buffer[agent].mul_(1.0 - alpha).add_(alpha * value)
         self._global_stance_quality_ema[agent].mul_(0.99).add_(0.01 * stance_quality.mean().detach())
         self._global_support_quality_ema[agent].mul_(0.99).add_(0.01 * support_quality.mean().detach())
+        self._global_fall_pressure_ema[agent].mul_(0.99).add_(0.01 * fall_pressure.mean().detach())
 
     def _clean_attack_credit(self, agent: str, opponent: str) -> torch.Tensor:
         attack = torch.maximum(self._proof_impact[agent], self._recent_attack_pressure[agent])
@@ -2179,7 +2181,41 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             0.0,
             1.0,
         )
-        return torch.clamp(stance * support, 0.0, 1.0)
+        local_gate = torch.clamp(stance * support, 0.0, 1.0)
+        if not bool(getattr(cfg, "adaptive_stability_governor_enabled", False)):
+            return local_gate
+
+        width = max(float(getattr(cfg, "stability_governor_ramp_width", 0.20)), 1.0e-6)
+        fall_width = max(float(getattr(cfg, "stability_governor_fall_width", 0.20)), 1.0e-6)
+        global_stance = torch.clamp(
+            (
+                self._global_stance_quality_ema[agent]
+                - float(getattr(cfg, "stability_governor_min_stance", cfg.phase_min_stance_quality))
+            )
+            / width,
+            0.0,
+            1.0,
+        )
+        global_support = torch.clamp(
+            (
+                self._global_support_quality_ema[agent]
+                - float(getattr(cfg, "stability_governor_min_support", cfg.phase_min_support_quality))
+            )
+            / width,
+            0.0,
+            1.0,
+        )
+        fall_pressure = torch.clamp(self._global_fall_pressure_ema[agent], 0.0, 1.0)
+        fall_gate = torch.clamp(
+            (float(getattr(cfg, "stability_governor_max_fall_pressure", 0.32)) - fall_pressure) / fall_width,
+            0.0,
+            1.0,
+        )
+        global_gate = torch.clamp(global_stance * global_support * fall_gate, 0.0, 1.0)
+        global_weight = max(0.0, min(1.0, float(getattr(cfg, "stability_governor_global_weight", 0.75))))
+        mixed_gate = (1.0 - global_weight) * local_gate + global_weight * global_gate
+        min_gate = max(0.0, min(0.5, float(getattr(cfg, "stability_governor_min_phase_gate", 0.18))))
+        return torch.clamp(min_gate + (1.0 - min_gate) * mixed_gate, 0.0, 1.0)
 
     def _phase_features(self, agent: str, opponent: str) -> torch.Tensor:
         episode_time = self.episode_length_buf.float() * self.step_dt
