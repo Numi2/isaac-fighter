@@ -26,6 +26,12 @@ parser.add_argument("--algorithm", type=str, default="IPPO", choices=["IPPO", "M
 parser.add_argument("--seed", type=int, default=None)
 parser.add_argument("--checkpoint", type=str, default=None)
 parser.add_argument("--max_iterations", type=int, default=None)
+parser.add_argument(
+    "--curriculum_start_step",
+    type=int,
+    default=0,
+    help="Initialize the environment curriculum/common step counter for playback or resumed staged runs.",
+)
 parser.add_argument("--ml_framework", type=str, default="torch", choices=["torch", "jax", "jax-numpy"])
 parser.add_argument(
     "--self_play",
@@ -710,6 +716,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.export_io_descriptors = args_cli.export_io_descriptors
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    if args_cli.curriculum_start_step > 0 and hasattr(env.unwrapped, "common_step_counter"):
+        env.unwrapped.common_step_counter = int(args_cli.curriculum_start_step)
+        print(f"[INFO] Initialized curriculum step counter to {args_cli.curriculum_start_step}")
     if isinstance(env.unwrapped, DirectMARLEnv) and algorithm == "ppo":
         env = multi_agent_to_single_agent(env)
 

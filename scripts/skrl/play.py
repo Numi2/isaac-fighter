@@ -18,6 +18,12 @@ parser.add_argument("--checkpoint", type=str, default=None)
 parser.add_argument("--algorithm", type=str, default="IPPO", choices=["IPPO", "MAPPO", "PPO"])
 parser.add_argument("--num_envs", type=int, default=16)
 parser.add_argument("--steps", type=int, default=5000)
+parser.add_argument(
+    "--curriculum_start_step",
+    type=int,
+    default=0,
+    help="Initialize the environment curriculum/common step counter before playback.",
+)
 parser.add_argument("--ml_framework", type=str, default="torch", choices=["torch", "jax", "jax-numpy"])
 parser.add_argument("--residual_locomotion_checkpoint", type=str, default=None)
 parser.add_argument("--residual_base_action_scale", type=float, default=1.0)
@@ -60,6 +66,9 @@ def main(env_cfg, agent_cfg):  # noqa: ANN001
         env_cfg.residual_locomotion.base_action_scale = args_cli.residual_base_action_scale
         env_cfg.residual_locomotion.residual_action_scale = args_cli.residual_action_scale
     env = gym.make(args_cli.task, cfg=env_cfg)
+    if args_cli.curriculum_start_step > 0 and hasattr(env.unwrapped, "common_step_counter"):
+        env.unwrapped.common_step_counter = int(args_cli.curriculum_start_step)
+        print(f"[INFO] Initialized curriculum step counter to {args_cli.curriculum_start_step}")
     env = maybe_wrap_residual_locomotion(env, env_cfg, args_cli)
     env = SkrlVecEnvWrapper(env, ml_framework=args_cli.ml_framework)
     runner = Runner(env, agent_cfg)
