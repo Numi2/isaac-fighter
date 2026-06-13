@@ -355,6 +355,141 @@ class CombatRewardComputer:
 
         final_win, final_loss, final_draw = self._terminal_terms(env, agent)
 
+        if getattr(scales, "profile", "full_combat") == "stand_shove_bootstrap":
+            stand_gate = torch.clamp(1.0 - 0.65 * attack_phase, 0.35, 1.0)
+            stable_limb_contact = stable_contact_attack + 0.65 * limb_contact_reward
+            torso_collapse = (
+                torso_first_contact
+                + torso_grounded_penalty
+                + forward_collapse
+                + collapse_contact_credit
+                + bad_contact_penalty
+            )
+            locomotion_quality = (
+                velocity_command_tracking
+                + 0.60 * yaw_heading_tracking
+                + 0.70 * approach_with_feet_gate
+                + 0.40 * forward_step_progress
+                + 0.30 * cadence_or_alternating_support
+            )
+            terms = {
+                "stand_upright": stand_gate
+                * (scales.standing_height * standing_height + scales.upright_stability * upright),
+                "stand_support": stand_gate
+                * (
+                    scales.support_contact * support_contact
+                    + scales.foot_support_quality * foot_support_quality
+                    + scales.both_feet_support_warmup * both_feet_support_warmup
+                ),
+                "stand_capture": stand_gate
+                * (
+                    scales.center_of_mass_over_support * center_of_mass_over_support
+                    + scales.capture_point_support * capture_point_support
+                    + scales.leg_extension_posture * leg_extension_posture
+                    + scales.stance_width * stance_width
+                ),
+                "motion_prior": scales.motion_prior * motion_prior,
+                "locomotion_to_opponent": approach_phase
+                * (
+                    scales.velocity_command_tracking * velocity_command_tracking
+                    + scales.yaw_heading_tracking * yaw_heading_tracking
+                    + scales.approach_with_feet_gate * approach_with_feet_gate
+                    + scales.forward_step_progress * forward_step_progress
+                    + scales.locomotion_drive * locomotion_drive
+                    + scales.feet_air_time_biped * feet_air_time_biped
+                    + scales.single_stance_balance * single_stance_balance
+                    + scales.cadence_or_alternating_support * cadence_or_alternating_support
+                ),
+                "locomotion_quality": scales.controlled_approach * locomotion_quality,
+                "planted_one_hand_push": hand_push_phase
+                * (
+                    scales.one_hand_push_setup * one_hand_push_setup
+                    + scales.one_hand_push_contact * one_hand_push_contact
+                    + scales.one_hand_push_balance * one_hand_push_balance
+                    + scales.one_hand_push_destabilize * one_hand_push_destabilize
+                    + scales.foot_plant_during_push * foot_plant_during_push
+                ),
+                "stable_limb_contact": hand_push_phase * scales.stable_contact_attack * stable_limb_contact,
+                "opponent_balance_break": hand_push_phase
+                * (
+                    scales.opponent_tilt_delta * opponent_tilt_delta
+                    + scales.opponent_height_drop_delta * opponent_height_drop_delta
+                    + scales.opponent_support_break * opponent_support_break
+                    + scales.opponent_angular_destabilization * opponent_angular_destabilization
+                    + scales.opponent_destabilization * opp_destabilization
+                    + scales.fall_cause_credit * fall_cause_credit
+                ),
+                "opponent_finish": hand_push_phase
+                * (
+                    scales.opponent_fall * opponent_fall
+                    + scales.opponent_knockdown * opponent_knockdown
+                    + scales.clean_knockdown_bonus * clean_knockdown_bonus
+                ),
+                "stable_push_aux": (
+                    scales.impact_balance * impact_balance + scales.progressive_attack_gate * progressive_attack_gate
+                ),
+                "shove_proxy_guard": -scales.contact_without_progress * contact_without_progress,
+                "no_torso_collapse": -(
+                    scales.torso_first_contact
+                    + scales.torso_grounded_penalty
+                    + scales.forward_collapse
+                    + scales.collapse_contact_credit
+                    + scales.bad_contact_penalty
+                )
+                * torso_collapse,
+                "no_unstable_attack": -(
+                    scales.unstable_attack * unstable_attack
+                    + scales.impact_self_destabilization * impact_self_destabilization
+                    + scales.offhand_push_penalty * offhand_push_penalty
+                    + scales.self_contact_abuse * self_contact_abuse
+                ),
+                "no_fall": -(
+                    scales.self_fall * self_fall
+                    + scales.fall_early * fall_early
+                    + scales.mutual_fall_hard_penalty * mutual_fall_hard_penalty
+                    + scales.airborne_without_attack * airborne_without_attack
+                    + scales.fall_recovery_failure * fall_recovery_failure
+                ),
+                "posture_penalty": -(
+                    scales.low_base_height * low_base_height
+                    + scales.base_pitch_roll * base_pitch_roll
+                    + scales.angular_stumble * angular_stumble
+                    + scales.knee_collapse * knee_collapse
+                    + scales.root_height_velocity_down * root_height_velocity_down
+                    + scales.torso_only_motion * torso_only_motion
+                    + scales.backward_lean * backward_lean
+                    + scales.backward_motion * backward_motion
+                    + scales.foot_slip * foot_slip
+                ),
+                "control_penalty": -(
+                    scales.energy * energy
+                    + scales.action_rate * action_rate
+                    + scales.torque_spike * torque_spike
+                    + scales.joint_limit_slam * joint_limit_slam
+                    + scales.joint_limit_abuse * joint_limit_penalty
+                    + scales.jitter * jitter_penalty
+                    + scales.spin_flail_penalty * spin_flail_penalty
+                ),
+                "warmup_restraint": -(
+                    scales.warmup_action_restraint * warmup_action_restraint
+                    + scales.stand_still_joint_deviation * stand_still_joint_deviation
+                    + scales.arm_motion_restraint * arm_motion_restraint
+                    + scales.hip_yaw_roll_deviation * hip_yaw_roll_deviation
+                    + scales.waist_action * waist_action
+                ),
+                "arena_and_terminal": (
+                    scales.stay_inside * stay_inside
+                    - scales.out_of_bounds * env._out_of_bounds[agent].float()
+                    + scales.final_win * final_win
+                    - scales.final_loss * final_loss
+                    + scales.final_draw * final_draw
+                ),
+            }
+            total = torch.zeros_like(distance)
+            for value in terms.values():
+                total = total + value
+            return RewardBreakdown(total=total, terms=terms)
+
         terms = {
             "upright_stability": scales.upright_stability * upright,
             "balance_recovery": scales.balance_recovery * balance_recovery,

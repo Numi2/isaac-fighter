@@ -25,6 +25,6 @@ IPPO/MAPPO population can bootstrap.
 
 ## Staged Competence
 
-The fast preset now uses Unitree's G1 velocity action-scale profile, adversarial perturbations, compact temporal memory,
-fall-recovery shaping, and gated ADR. PBT reward mutation is available but disabled by default; it is intended only after
-standing and shove-survival metrics are visibly improving.
+The focused bootstrap preset uses Unitree's G1 velocity action-scale profile, compact temporal memory, and a reduced
+stand-shove reward profile. Perturbations, ADR, fall-recovery reset starts, body-slam pressure, and league sampling are
+deferred until upright support and shove-survival metrics are visibly improving.

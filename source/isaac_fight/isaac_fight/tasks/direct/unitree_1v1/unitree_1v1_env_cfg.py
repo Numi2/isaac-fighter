@@ -92,7 +92,7 @@ class ContactCfg:
 class PerturbationCfg:
     """Adversarial balance perturbations for standing and early-contact competence."""
 
-    enabled: bool = True
+    enabled: bool = False
     probability: float = 0.70
     start_step: int = 8_000
     ramp_end_step: int = 36_000
@@ -160,7 +160,7 @@ class MotionPriorCfg:
 class AdrCfg:
     """Gated domain-randomization/PBT ramp after visible stand-and-shove competence."""
 
-    enabled: bool = True
+    enabled: bool = False
     start_step: int = 20_000
     min_history_stance: float = 0.55
     min_history_support: float = 0.45
@@ -236,6 +236,7 @@ class CurriculumCfg:
 class RewardScalesCfg:
     """Reward weights. All penalties are configured as positive magnitudes."""
 
+    profile: str = "full_combat"
     upright_stability: float = 0.03
     balance_recovery: float = 0.03
     standing_height: float = 2.50

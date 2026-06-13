@@ -25,7 +25,7 @@ The default fight is symmetric Unitree G1-29DoF vs G1-29DoF for fastest locomoti
 - Penalty stack: self-fall, boundary loss, torque/action effort, joint-limit pressure, jitter, inactivity, spin-without-contact, uncontrolled collision.
 - Population tooling: checkpoint pool, Elo metadata, weakness/recency sampler, tournament script, replay JSONL.
 - Motion-prior tooling: G1 mimic feature parsing, rollout AMP feature export, discriminator training, and runtime AMP reward inference.
-- Bootstrap curriculum: residual G1 velocity control first, staged approach/push phases, stance-gated perturbation ramp, then full self-play once standing/contact metrics are real.
+- Bootstrap curriculum: residual G1 velocity control first, staged standing/approach/one-hand shove phases, then perturbations and full self-play once standing/contact metrics are real.
 
 ## Roadmap
 
@@ -48,11 +48,12 @@ Achieved:
 - League tooling includes main/exploiter roles, tournament health summaries, evaluation-driven promoted/suppressed tags, and sampler weighting from those tags.
 - Checkpoint health metadata tracks upright seconds, feet-ground support, caused knockdowns, mutual falls, torso-first contacts, proof impact, and health score.
 - Foot support reward uses near-ground upward vertical load on support bodies, while robot-robot proof contact remains separate from support telemetry.
+- Reward stack now has a focused `stand_shove_bootstrap` profile: upright support, capture-point balance, locomotion-to-opponent, planted one-hand shove, opponent balance break, and hard penalties for torso-first collapse.
 
 Next:
 
 - Use official `Isaac-Velocity-Flat-G1-v0` / `Isaac-Velocity-Rough-G1-v0` artifacts as the stage-1 standing/walking base before widening residual authority.
-- Resume a new bootstrap run from the latest v18/v19 checkpoint with the cleaned support signal and validated AMP artifacts.
+- With limited GPU time, harvest the latest v18 checkpoint and resume with `--launch_preset stand_shove_bootstrap`, not full league self-play.
 - Run tournament ladders to update Elo, weakness scores, league promotion, and matchup selection after standing/contact metrics visibly improve.
 - Record representative replay JSONL from late-stage checkpoints for behavior inspection.
 - Tune from telemetry toward high useful-contact, high opponent-destabilization, low passive-survival return.
@@ -86,23 +87,23 @@ Self-play is closed-loop by default: checkpoints are synced into `policy_pool` d
 
 Use `--launch_preset full_fight_self_play` for 30s rounds, the larger arena, wider spawns, and no bootstrap timeout after the policies are reliably making contact.
 
-Fast G1 combat bootstrap should stay residual over a locomotion base first:
+Fast G1 combat bootstrap should stay residual over a locomotion base first. For short GPU windows and unstable robots, use the focused stand-shove profile:
 
 ```bash
 ./isaaclab.sh -p /path/to/isaac-fight/scripts/skrl/train.py \
   --task GhostFighter-Unitree-1v1-Direct-v0 \
   --algorithm IPPO \
-  --launch_preset fast_contact_bootstrap \
+  --launch_preset stand_shove_bootstrap \
   --num_envs 8192 \
   --checkpoint /path/to/g1_velocity_to_fight.pt \
   --residual_locomotion_checkpoint /path/to/g1_velocity_to_fight.pt \
   --residual_base_action_scale 1.0 \
   --residual_action_scale 0.08 \
-  --snapshot_interval 256 \
-  --no_self_play \
-  --no_historical_opponent \
+  --snapshot_interval 128 \
   --headless
 ```
+
+`stand_shove_bootstrap` automatically disables historical opponents, league sampling, fall-recovery reset starts, perturbations, ADR, and body-slam reward pressure. It keeps the task narrow: stand on feet, approach, shove with one selected hand while balanced, and make the opponent lose support without collapsing first.
 
 AMP/mimic bootstrap loop:
 

@@ -64,7 +64,7 @@ parser.add_argument(
 )
 parser.add_argument("--residual_locomotion_checkpoint", type=str, default=None)
 parser.add_argument("--residual_base_action_scale", type=float, default=1.0)
-parser.add_argument("--residual_action_scale", type=float, default=0.35)
+parser.add_argument("--residual_action_scale", type=float, default=0.08)
 parser.add_argument("--residual_leg_action_scale", type=float, default=None)
 parser.add_argument("--residual_waist_action_scale", type=float, default=None)
 parser.add_argument("--residual_arm_action_scale", type=float, default=None)
@@ -88,7 +88,7 @@ parser.add_argument(
     "--launch_preset",
     type=str,
     default="fast_contact_bootstrap",
-    choices=["fast_contact_bootstrap", "full_fight_self_play"],
+    choices=["fast_contact_bootstrap", "stand_shove_bootstrap", "full_fight_self_play"],
 )
 parser.add_argument("--export_io_descriptors", action="store_true", default=False)
 AppLauncher.add_app_launcher_args(parser)
@@ -158,13 +158,14 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
     if not hasattr(env_cfg, "fighter_a"):
         return
     refresh_spaces = False
-    if preset == "fast_contact_bootstrap":
+    if preset in ("fast_contact_bootstrap", "stand_shove_bootstrap"):
+        stand_shove_only = preset == "stand_shove_bootstrap"
         env_cfg.fighter_a.robot_name = "g1_29dof"
         env_cfg.fighter_b.robot_name = "g1_29dof"
         refresh_spaces = True
         env_cfg.decimation = 3
         env_cfg.sim.render_interval = env_cfg.decimation
-        env_cfg.episode_length_s = 6.5
+        env_cfg.episode_length_s = 6.0 if stand_shove_only else 6.5
         env_cfg.arena.radius = 1.65
         env_cfg.rules.knockout_grace_s = max(float(env_cfg.rules.knockout_grace_s), 1.35)
         env_cfg.fighter_a.spawn_xy = (-0.50, -0.08)
@@ -190,29 +191,56 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
         env_cfg.contact.fall_credit_min_attack = 0.08
         env_cfg.curriculum.enabled = True
         env_cfg.curriculum.standing_warmup_s = max(float(env_cfg.curriculum.standing_warmup_s), 2.25)
-        env_cfg.curriculum.action_hold_s = max(float(env_cfg.curriculum.action_hold_s), 1.20)
-        env_cfg.curriculum.action_ramp_s = max(float(env_cfg.curriculum.action_ramp_s), 1.10)
-        env_cfg.curriculum.fall_recovery_enabled = True
-        env_cfg.curriculum.fall_recovery_window_s = max(float(env_cfg.curriculum.fall_recovery_window_s), 1.60)
-        env_cfg.curriculum.no_engagement_timeout_s = 5.2
-        env_cfg.curriculum.no_engagement_grace_s = 3.2
-        env_cfg.curriculum.proxy_gain_anneal_steps = min(int(env_cfg.curriculum.proxy_gain_anneal_steps), 20_000)
-        env_cfg.curriculum.min_proxy_gain = max(float(env_cfg.curriculum.min_proxy_gain), 0.20)
-        env_cfg.curriculum.stand_phase_steps = min(int(env_cfg.curriculum.stand_phase_steps), 6_000)
-        env_cfg.curriculum.approach_phase_steps = min(int(env_cfg.curriculum.approach_phase_steps), 14_000)
-        env_cfg.curriculum.hand_push_phase_steps = min(int(env_cfg.curriculum.hand_push_phase_steps), 28_000)
-        env_cfg.curriculum.body_slam_phase_steps = min(int(env_cfg.curriculum.body_slam_phase_steps), 48_000)
-        env_cfg.curriculum.full_fight_phase_steps = min(int(env_cfg.curriculum.full_fight_phase_steps), 80_000)
-        env_cfg.curriculum.phase_min_stance_quality = max(float(env_cfg.curriculum.phase_min_stance_quality), 0.55)
-        env_cfg.curriculum.phase_min_support_quality = max(float(env_cfg.curriculum.phase_min_support_quality), 0.50)
-        env_cfg.curriculum.fall_recovery_reset_probability = max(
-            float(env_cfg.curriculum.fall_recovery_reset_probability), 0.12
+        env_cfg.curriculum.action_hold_s = max(
+            float(env_cfg.curriculum.action_hold_s), 1.20 if not stand_shove_only else 1.55
         )
+        env_cfg.curriculum.action_ramp_s = max(
+            float(env_cfg.curriculum.action_ramp_s), 1.10 if not stand_shove_only else 1.45
+        )
+        env_cfg.curriculum.fall_recovery_enabled = not stand_shove_only
+        env_cfg.curriculum.fall_recovery_window_s = max(float(env_cfg.curriculum.fall_recovery_window_s), 1.60)
+        env_cfg.curriculum.no_engagement_timeout_s = 6.0 if stand_shove_only else 5.2
+        env_cfg.curriculum.no_engagement_grace_s = 4.4 if stand_shove_only else 3.2
+        env_cfg.curriculum.proxy_gain_anneal_steps = min(
+            int(env_cfg.curriculum.proxy_gain_anneal_steps), 36_000 if stand_shove_only else 20_000
+        )
+        env_cfg.curriculum.min_proxy_gain = max(
+            float(env_cfg.curriculum.min_proxy_gain), 0.10 if stand_shove_only else 0.20
+        )
+        env_cfg.curriculum.stand_phase_steps = (
+            10_000 if stand_shove_only else min(int(env_cfg.curriculum.stand_phase_steps), 6_000)
+        )
+        env_cfg.curriculum.approach_phase_steps = (
+            24_000 if stand_shove_only else min(int(env_cfg.curriculum.approach_phase_steps), 14_000)
+        )
+        env_cfg.curriculum.hand_push_phase_steps = (
+            64_000 if stand_shove_only else min(int(env_cfg.curriculum.hand_push_phase_steps), 28_000)
+        )
+        env_cfg.curriculum.body_slam_phase_steps = (
+            1_000_000 if stand_shove_only else min(int(env_cfg.curriculum.body_slam_phase_steps), 48_000)
+        )
+        env_cfg.curriculum.full_fight_phase_steps = (
+            1_200_000 if stand_shove_only else min(int(env_cfg.curriculum.full_fight_phase_steps), 80_000)
+        )
+        env_cfg.curriculum.phase_min_stance_quality = max(
+            float(env_cfg.curriculum.phase_min_stance_quality), 0.62 if stand_shove_only else 0.55
+        )
+        env_cfg.curriculum.phase_min_support_quality = max(
+            float(env_cfg.curriculum.phase_min_support_quality), 0.55 if stand_shove_only else 0.50
+        )
+        if stand_shove_only:
+            env_cfg.curriculum.fall_recovery_reset_probability = 0.0
+        else:
+            env_cfg.curriculum.fall_recovery_reset_probability = max(
+                float(env_cfg.curriculum.fall_recovery_reset_probability), 0.12
+            )
         env_cfg.curriculum.fall_recovery_reset_start_step = min(
             int(env_cfg.curriculum.fall_recovery_reset_start_step), 12_000
         )
-        env_cfg.perturbations.enabled = True
-        env_cfg.perturbations.probability = max(float(env_cfg.perturbations.probability), 0.85)
+        env_cfg.perturbations.enabled = not stand_shove_only
+        env_cfg.perturbations.probability = max(
+            float(env_cfg.perturbations.probability), 0.85 if not stand_shove_only else 0.0
+        )
         env_cfg.perturbations.start_step = max(
             int(getattr(env_cfg.perturbations, "start_step", 0)),
             int(env_cfg.curriculum.stand_phase_steps),
@@ -237,12 +265,13 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
         env_cfg.perturbations.angular_velocity_max = max(float(env_cfg.perturbations.angular_velocity_max), 1.25)
         env_cfg.perturbations.recovery_window_s = max(float(env_cfg.perturbations.recovery_window_s), 1.50)
         env_cfg.observations_cfg.temporal_memory_s = max(float(env_cfg.observations_cfg.temporal_memory_s), 0.55)
-        env_cfg.adr.enabled = True
+        env_cfg.adr.enabled = not stand_shove_only
         env_cfg.adr.start_step = max(int(env_cfg.adr.start_step), 20_000)
         env_cfg.self_play.opponent_update_interval = min(int(env_cfg.self_play.opponent_update_interval), 160)
         env_cfg.self_play.live_self_play_fraction = max(float(env_cfg.self_play.live_self_play_fraction), 0.45)
-        env_cfg.self_play.league_training_enabled = True
+        env_cfg.self_play.league_training_enabled = not stand_shove_only
         env_cfg.self_play.league_role = league_role
+        env_cfg.rewards.profile = "stand_shove_bootstrap"
         env_cfg.rewards.contact_intent = max(float(env_cfg.rewards.contact_intent), 2.8)
         env_cfg.rewards.standing_height = max(float(env_cfg.rewards.standing_height), 18.0)
         env_cfg.rewards.support_contact = max(float(env_cfg.rewards.support_contact), 9.0)
@@ -332,6 +361,35 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
         env_cfg.rewards.fall_cause_credit = max(float(env_cfg.rewards.fall_cause_credit), 18.0)
         env_cfg.rewards.energy = min(float(env_cfg.rewards.energy), 0.010)
         env_cfg.rewards.jitter = min(float(env_cfg.rewards.jitter), 0.08)
+        if stand_shove_only:
+            env_cfg.rewards.contact_intent = 0.0
+            env_cfg.rewards.attack_momentum = min(float(env_cfg.rewards.attack_momentum), 0.8)
+            env_cfg.rewards.torso_charge_reward = 0.0
+            env_cfg.rewards.destabilizing_impact = min(float(env_cfg.rewards.destabilizing_impact), 2.0)
+            env_cfg.rewards.topple_pressure = min(float(env_cfg.rewards.topple_pressure), 2.0)
+            env_cfg.rewards.drive_pressure = min(float(env_cfg.rewards.drive_pressure), 1.0)
+            env_cfg.rewards.useful_contact = min(float(env_cfg.rewards.useful_contact), 1.0)
+            env_cfg.rewards.standing_height = max(float(env_cfg.rewards.standing_height), 24.0)
+            env_cfg.rewards.support_contact = max(float(env_cfg.rewards.support_contact), 18.0)
+            env_cfg.rewards.center_of_mass_over_support = max(float(env_cfg.rewards.center_of_mass_over_support), 20.0)
+            env_cfg.rewards.capture_point_support = max(float(env_cfg.rewards.capture_point_support), 16.0)
+            env_cfg.rewards.foot_support_quality = max(float(env_cfg.rewards.foot_support_quality), 16.0)
+            env_cfg.rewards.base_pitch_roll = max(float(env_cfg.rewards.base_pitch_roll), 34.0)
+            env_cfg.rewards.root_height_velocity_down = max(float(env_cfg.rewards.root_height_velocity_down), 36.0)
+            env_cfg.rewards.forward_collapse = max(float(env_cfg.rewards.forward_collapse), 42.0)
+            env_cfg.rewards.collapse_contact_credit = max(float(env_cfg.rewards.collapse_contact_credit), 44.0)
+            env_cfg.rewards.torso_first_contact = max(float(env_cfg.rewards.torso_first_contact), 36.0)
+            env_cfg.rewards.torso_grounded_penalty = max(float(env_cfg.rewards.torso_grounded_penalty), 32.0)
+            env_cfg.rewards.low_base_height = max(float(env_cfg.rewards.low_base_height), 110.0)
+            env_cfg.rewards.self_fall = max(float(env_cfg.rewards.self_fall), 160.0)
+            env_cfg.rewards.fall_early = max(float(env_cfg.rewards.fall_early), 120.0)
+            env_cfg.rewards.one_hand_push_setup = max(float(env_cfg.rewards.one_hand_push_setup), 8.0)
+            env_cfg.rewards.one_hand_push_contact = max(float(env_cfg.rewards.one_hand_push_contact), 14.0)
+            env_cfg.rewards.one_hand_push_balance = max(float(env_cfg.rewards.one_hand_push_balance), 14.0)
+            env_cfg.rewards.one_hand_push_destabilize = max(float(env_cfg.rewards.one_hand_push_destabilize), 10.0)
+            env_cfg.rewards.foot_plant_during_push = max(float(env_cfg.rewards.foot_plant_during_push), 12.0)
+            env_cfg.rewards.offhand_push_penalty = max(float(env_cfg.rewards.offhand_push_penalty), 6.0)
+            env_cfg.rewards.bad_contact_penalty = max(float(env_cfg.rewards.bad_contact_penalty), 12.0)
         _apply_league_role_reward_bias(env_cfg, league_role)
         env_cfg.diagnostics.reward_terms_interval = max(int(env_cfg.diagnostics.reward_terms_interval), 2048)
         agent_cfg["agent"]["rollouts"] = 32
@@ -496,6 +554,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
     _apply_launch_preset(env_cfg, agent_cfg, args_cli.launch_preset, args_cli.league_role)
+    if args_cli.launch_preset == "stand_shove_bootstrap":
+        args_cli.self_play = False
+        args_cli.historical_opponent = False
     if args_cli.residual_locomotion_checkpoint and hasattr(env_cfg, "residual_locomotion"):
         env_cfg.residual_locomotion.enabled = True
         env_cfg.residual_locomotion.checkpoint_path = args_cli.residual_locomotion_checkpoint
@@ -690,7 +751,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     if args_cli.self_play:
         print(
-            f"[INFO] Self-play pool synchronized. Added {final_sync_added} checkpoint(s) to {Path(args_cli.pool_dir).resolve()}"
+            "[INFO] Self-play pool synchronized. "
+            f"Added {final_sync_added} checkpoint(s) to {Path(args_cli.pool_dir).resolve()}"
         )
 
     env.close()
