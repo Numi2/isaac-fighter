@@ -483,7 +483,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         _apply_pbt_reward_mutation(env_cfg, args_cli.pbt_mutation_seed, args_cli.pbt_mutation_scale)
     if args_cli.max_iterations:
         agent_cfg["trainer"]["timesteps"] = args_cli.max_iterations * agent_cfg["agent"]["rollouts"]
-    if args_cli.self_play and args_cli.snapshot_interval:
+    if args_cli.snapshot_interval:
         checkpoint_every = max(1, args_cli.snapshot_interval) * agent_cfg["agent"]["rollouts"]
         agent_cfg["agent"]["experiment"]["checkpoint_interval"] = checkpoint_every
     if args_cli.seed == -1:
