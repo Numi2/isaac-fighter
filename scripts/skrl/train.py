@@ -303,13 +303,13 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
         env_cfg.rewards.energy = min(float(env_cfg.rewards.energy), 0.010)
         env_cfg.rewards.jitter = min(float(env_cfg.rewards.jitter), 0.08)
         _apply_league_role_reward_bias(env_cfg, league_role)
-        env_cfg.diagnostics.reward_terms_interval = max(int(env_cfg.diagnostics.reward_terms_interval), 256)
-        agent_cfg["agent"]["rollouts"] = 16
-        agent_cfg["agent"]["learning_epochs"] = min(int(agent_cfg["agent"]["learning_epochs"]), 3)
+        env_cfg.diagnostics.reward_terms_interval = max(int(env_cfg.diagnostics.reward_terms_interval), 2048)
+        agent_cfg["agent"]["rollouts"] = 32
+        agent_cfg["agent"]["learning_epochs"] = min(int(agent_cfg["agent"]["learning_epochs"]), 2)
         agent_cfg["agent"]["mini_batches"] = min(int(agent_cfg["agent"]["mini_batches"]), 4)
         agent_cfg["agent"]["entropy_loss_scale"] = max(float(agent_cfg["agent"]["entropy_loss_scale"]), 0.008)
         agent_cfg["agent"]["experiment"]["write_interval"] = max(
-            int(agent_cfg["agent"]["experiment"]["write_interval"]), 600
+            int(agent_cfg["agent"]["experiment"]["write_interval"]), 2000
         )
     elif preset == "full_fight_self_play":
         env_cfg.episode_length_s = 30.0
