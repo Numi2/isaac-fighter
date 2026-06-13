@@ -14,7 +14,7 @@ Early G1-vs-G1 self-play visual milestone from the fast combat bootstrap run. Th
 
 `GhostFighter-Unitree-1v1-Direct-v0` is a true `DirectMARLEnv`: two independent Unitree humanoid articulations, asymmetric action/observation spaces, per-agent rewards, per-agent terminations, round logic, replay traces, tournament evaluation, and a persistent self-play policy pool.
 
-The default fight is Unitree G1-29DoF vs H1. Robot physics, meshes, actuators, joint names, and initial poses are imported from upstream Unitree Isaac Lab assets at runtime; this repo does not fake or vendor robot models.
+The default fight is symmetric Unitree G1-29DoF vs G1-29DoF for fastest locomotion-to-combat bootstrapping. Robot physics, meshes, actuators, joint names, and initial poses are imported from upstream Unitree Isaac Lab assets at runtime; this repo does not fake or vendor robot models.
 
 ## Core
 
@@ -25,6 +25,7 @@ The default fight is Unitree G1-29DoF vs H1. Robot physics, meshes, actuators, j
 - Penalty stack: self-fall, boundary loss, torque/action effort, joint-limit pressure, jitter, inactivity, spin-without-contact, uncontrolled collision.
 - Population tooling: checkpoint pool, Elo metadata, weakness/recency sampler, tournament script, replay JSONL.
 - Motion-prior tooling: G1 mimic feature parsing, rollout AMP feature export, discriminator training, and runtime AMP reward inference.
+- Bootstrap curriculum: residual G1 velocity control first, staged approach/push phases, stance-gated perturbation ramp, then full self-play once standing/contact metrics are real.
 
 ## Roadmap
 

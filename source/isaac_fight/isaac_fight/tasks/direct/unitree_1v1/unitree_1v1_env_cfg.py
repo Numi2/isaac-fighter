@@ -94,6 +94,10 @@ class PerturbationCfg:
 
     enabled: bool = True
     probability: float = 0.70
+    start_step: int = 8_000
+    ramp_end_step: int = 36_000
+    min_history_stance: float = 0.35
+    min_history_support: float = 0.30
     time_min_s: float = 0.45
     time_max_s: float = 2.35
     linear_velocity_min: float = 0.20

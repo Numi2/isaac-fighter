@@ -211,6 +211,22 @@ def _apply_launch_preset(env_cfg, agent_cfg: dict, preset: str, league_role: str
         )
         env_cfg.perturbations.enabled = True
         env_cfg.perturbations.probability = max(float(env_cfg.perturbations.probability), 0.85)
+        env_cfg.perturbations.start_step = max(
+            int(getattr(env_cfg.perturbations, "start_step", 0)),
+            int(env_cfg.curriculum.stand_phase_steps),
+        )
+        env_cfg.perturbations.ramp_end_step = max(
+            int(getattr(env_cfg.perturbations, "ramp_end_step", 0)),
+            int(env_cfg.curriculum.hand_push_phase_steps),
+        )
+        env_cfg.perturbations.min_history_stance = max(
+            float(getattr(env_cfg.perturbations, "min_history_stance", 0.0)),
+            0.45,
+        )
+        env_cfg.perturbations.min_history_support = max(
+            float(getattr(env_cfg.perturbations, "min_history_support", 0.0)),
+            0.40,
+        )
         env_cfg.perturbations.time_min_s = min(float(env_cfg.perturbations.time_min_s), 0.45)
         env_cfg.perturbations.time_max_s = max(float(env_cfg.perturbations.time_max_s), 2.20)
         env_cfg.perturbations.linear_velocity_min = max(float(env_cfg.perturbations.linear_velocity_min), 0.25)
@@ -559,7 +575,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "algorithm": algorithm.upper(),
             "task": args_cli.task,
             "seed": args_cli.seed,
-            "reward_version": "privileged_phase_amp_league_recovery_v17",
+            "reward_version": "privileged_phase_amp_league_recovery_v18_perturb_ramp",
             "league_role": args_cli.league_role,
             "config_hash": hashlib.sha256(
                 json.dumps(

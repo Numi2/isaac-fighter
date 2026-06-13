@@ -419,6 +419,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         self._history_perturbation_active = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._history_fall_pressure = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._history_push_activity = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
+        self._global_stance_quality_ema = {agent: torch.zeros((), device=device) for agent in FIGHTERS}
+        self._global_support_quality_ema = {agent: torch.zeros((), device=device) for agent in FIGHTERS}
         self._energy = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._energy_ema = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
         self._torque_penalty = {agent: torch.zeros(n, device=device) for agent in FIGHTERS}
@@ -638,15 +640,21 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
                 module = torch.jit.load(str(path), map_location=self.device)
             except Exception:
                 payload = torch.load(path, map_location=self.device)
+                self._validate_motion_prior_discriminator_payload(payload, input_dim)
                 state_dict = self._motion_prior_discriminator_state_dict(payload)
                 if state_dict is None:
                     raise TypeError("checkpoint does not contain a discriminator state_dict")
+                hidden_dims = self._motion_prior_discriminator_hidden_dims(payload)
                 module = MotionPriorDiscriminator(
                     input_dim,
-                    tuple(int(dim) for dim in self.cfg.motion_prior.discriminator_hidden_dims),
+                    hidden_dims,
                 ).to(self.device)
-                cleaned = {key.removeprefix("module.").removeprefix("discriminator."): value for key, value in state_dict.items()}
-                module.load_state_dict(cleaned, strict=False)
+                cleaned = {
+                    key.removeprefix("module.").removeprefix("discriminator."): value
+                    for key, value in state_dict.items()
+                }
+                module.load_state_dict(cleaned, strict=True)
+            self._validate_motion_prior_discriminator_module(module, input_dim)
             module.to(self.device)
             module.eval()
             self._motion_prior_discriminator = module
@@ -654,6 +662,18 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         except Exception as exc:  # noqa: BLE001 - discriminator is optional bootstrap machinery.
             print(f"[WARN] Could not load AMP motion-prior discriminator {path}: {exc}", flush=True)
             self._motion_prior_discriminator = None
+
+    def _validate_motion_prior_discriminator_payload(self, payload: Any, input_dim: int) -> None:
+        if not isinstance(payload, dict) or "input_dim" not in payload:
+            return
+        artifact_dim = int(payload["input_dim"])
+        if artifact_dim != int(input_dim):
+            raise ValueError(f"discriminator input_dim {artifact_dim} != runtime AMP feature dim {input_dim}")
+
+    def _motion_prior_discriminator_hidden_dims(self, payload: Any) -> tuple[int, ...]:
+        if isinstance(payload, dict) and "hidden_dims" in payload:
+            return tuple(int(dim) for dim in payload["hidden_dims"])
+        return tuple(int(dim) for dim in self.cfg.motion_prior.discriminator_hidden_dims)
 
     def _motion_prior_discriminator_state_dict(self, payload: Any) -> dict[str, torch.Tensor] | None:
         if isinstance(payload, dict):
@@ -664,6 +684,18 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             if payload and all(isinstance(value, torch.Tensor) for value in payload.values()):
                 return payload
         return None
+
+    def _validate_motion_prior_discriminator_module(self, module: torch.nn.Module, input_dim: int) -> None:
+        with torch.no_grad():
+            features = torch.zeros(1, input_dim, device=self.device)
+            output = module(features)
+        if isinstance(output, dict):
+            output = output.get("logits", output.get("score", next(iter(output.values()))))
+        if isinstance(output, tuple):
+            output = output[0]
+        tensor = torch.as_tensor(output, device=self.device)
+        if tensor.numel() < 1:
+            raise ValueError("discriminator produced an empty output")
 
     def _pre_physics_step(self, actions: dict[str, torch.Tensor]) -> None:
         fighter_cfgs = {FIGHTER_A: self.cfg.fighter_a, FIGHTER_B: self.cfg.fighter_b}
@@ -1256,7 +1288,9 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             self._perturb_time[agent][env_ids] = float("inf")
             return
 
-        active = torch.rand(count, device=self.device) < max(0.0, min(1.0, float(cfg.probability)))
+        curriculum_scale = self._perturbation_curriculum_scale(agent)
+        effective_probability = max(0.0, min(1.0, float(cfg.probability) * curriculum_scale))
+        active = torch.rand(count, device=self.device) < effective_probability
         time_min = max(0.0, float(cfg.time_min_s))
         time_max = max(time_min, float(cfg.time_max_s))
         perturb_time = time_min + (time_max - time_min) * torch.rand(count, device=self.device)
@@ -1269,14 +1303,15 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         angle = 2.0 * math.pi * torch.rand(count, device=self.device)
         direction = torch.stack((torch.cos(angle), torch.sin(angle), torch.zeros_like(angle)), dim=-1)
         adr_scale = self._adr_scale()
-        linear_min = max(0.0, float(cfg.linear_velocity_min)) * (0.65 + 0.35 * adr_scale)
-        linear_max = max(linear_min, float(cfg.linear_velocity_max) * (1.0 + 0.60 * adr_scale))
+        magnitude_scale = 0.35 + 0.65 * curriculum_scale
+        linear_min = max(0.0, float(cfg.linear_velocity_min)) * (0.65 + 0.35 * adr_scale) * magnitude_scale
+        linear_max = max(linear_min, float(cfg.linear_velocity_max) * (1.0 + 0.60 * adr_scale) * magnitude_scale)
         linear_mag = linear_min + (linear_max - linear_min) * torch.rand(count, device=self.device)
         linear_delta = direction * linear_mag.unsqueeze(-1) * active.unsqueeze(-1)
         self._perturb_linear_velocity[agent][env_ids] = linear_delta
 
-        angular_min = max(0.0, float(cfg.angular_velocity_min)) * (0.65 + 0.35 * adr_scale)
-        angular_max = max(angular_min, float(cfg.angular_velocity_max) * (1.0 + 0.60 * adr_scale))
+        angular_min = max(0.0, float(cfg.angular_velocity_min)) * (0.65 + 0.35 * adr_scale) * magnitude_scale
+        angular_max = max(angular_min, float(cfg.angular_velocity_max) * (1.0 + 0.60 * adr_scale) * magnitude_scale)
         angular_mag = angular_min + (angular_max - angular_min) * torch.rand(count, device=self.device)
         angular_sign = torch.where(
             torch.rand(count, device=self.device) < 0.5,
@@ -1288,6 +1323,38 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         angular_delta[:, 0] = angular_sign * angular_mag * torch.sin(angle) * active
         angular_delta[:, 1] = -angular_sign * angular_mag * torch.cos(angle) * active
         self._perturb_angular_velocity[agent][env_ids] = angular_delta
+
+    def _perturbation_curriculum_scale(self, agent: str) -> float:
+        cfg = self.cfg.perturbations
+        start_step = int(getattr(cfg, "start_step", 0))
+        end_step = int(getattr(cfg, "ramp_end_step", start_step))
+        step = int(getattr(self, "common_step_counter", 0))
+        if step < start_step:
+            return 0.0
+        if end_step <= start_step:
+            step_scale = 1.0
+        else:
+            step_scale = (float(step) - float(start_step)) / float(end_step - start_step)
+            step_scale = max(0.0, min(1.0, step_scale))
+
+        min_stance = max(0.0, float(getattr(cfg, "min_history_stance", 0.0)))
+        min_support = max(0.0, float(getattr(cfg, "min_history_support", 0.0)))
+        if min_stance <= 0.0 and min_support <= 0.0:
+            return step_scale
+
+        stance_source = getattr(self, "_global_stance_quality_ema", {}).get(
+            agent,
+            self._history_stance_quality[agent].mean(),
+        )
+        support_source = getattr(self, "_global_support_quality_ema", {}).get(
+            agent,
+            self._history_support_quality[agent].mean(),
+        )
+        stance = float(torch.clamp(stance_source, 0.0, 1.0).item())
+        support = float(torch.clamp(support_source, 0.0, 1.0).item())
+        stance_gate = 1.0 if min_stance <= 0.0 else max(0.0, min(1.0, (stance - min_stance) / 0.25))
+        support_gate = 1.0 if min_support <= 0.0 else max(0.0, min(1.0, (support - min_support) / 0.25))
+        return step_scale * stance_gate * support_gate
 
     def _apply_scheduled_perturbations(self) -> None:
         if not getattr(self.cfg, "perturbations", None) or not self.cfg.perturbations.enabled:
@@ -1619,6 +1686,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         )
         for buffer, value in updates:
             buffer[agent].mul_(1.0 - alpha).add_(alpha * value)
+        self._global_stance_quality_ema[agent].mul_(0.99).add_(0.01 * stance_quality.mean().detach())
+        self._global_support_quality_ema[agent].mul_(0.99).add_(0.01 * support_quality.mean().detach())
 
     def _clean_attack_credit(self, agent: str, opponent: str) -> torch.Tensor:
         attack = torch.maximum(self._proof_impact[agent], self._recent_attack_pressure[agent])
