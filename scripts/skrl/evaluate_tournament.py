@@ -198,6 +198,7 @@ def _new_policy_stats() -> dict[str, float]:
         "health_score_sum": 0.0,
         "upright_seconds_sum": 0.0,
         "feet_ground_support_sum": 0.0,
+        "support_vertical_load_sum": 0.0,
         "caused_knockdowns_sum": 0.0,
         "mutual_falls_sum": 0.0,
         "torso_first_contacts_sum": 0.0,
@@ -221,6 +222,7 @@ def _accumulate_policy_stats(
     stats["health_score_sum"] += games * _episode_per_step_mean(env, agent_id, "combat_health_score")
     stats["upright_seconds_sum"] += games * _episode_per_step_mean(env, agent_id, "combat_health_upright_seconds")
     stats["feet_ground_support_sum"] += games * _episode_per_step_mean(env, agent_id, "combat_health_feet_ground_support")
+    stats["support_vertical_load_sum"] += games * _episode_per_step_mean(env, agent_id, "combat_support_vertical_load")
     stats["caused_knockdowns_sum"] += games * _episode_sum_mean(env, agent_id, "combat_health_caused_knockdowns")
     stats["mutual_falls_sum"] += games * _episode_sum_mean(env, agent_id, "combat_health_mutual_falls")
     stats["torso_first_contacts_sum"] += games * _episode_sum_mean(
@@ -287,6 +289,7 @@ def _summarize_policy_stats(stats: dict[str, float], policy) -> dict[str, float 
         "health_score": health_score,
         "upright_seconds": stats["upright_seconds_sum"] / games,
         "feet_ground_support": support,
+        "support_vertical_load": stats["support_vertical_load_sum"] / games,
         "caused_knockdown_rate": caused_knockdown_rate,
         "mutual_fall_rate": mutual_fall_rate,
         "torso_first_contact_rate": torso_first_rate,

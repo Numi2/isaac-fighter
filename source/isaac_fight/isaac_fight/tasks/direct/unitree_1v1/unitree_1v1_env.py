@@ -974,6 +974,11 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         )
         upright_seconds = (~self._fallen[agent]).float() * self.step_dt
         feet_ground_support = self._support_quality(agent)
+        support_vertical_load = torch.clamp(
+            self._support_contact_force(agent) / max(float(self.cfg.contact.force_normalizer), 1.0e-6),
+            0.0,
+            5.0,
+        )
         caused_knockdowns = opponent_knockdown * clean_attack
         health_score = (
             2.0 * upright_seconds
@@ -1002,6 +1007,7 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
             "combat_recent_attack_pressure": self._recent_attack_pressure[agent],
             "combat_perturbation_active": self._perturbation_active(agent),
             "combat_perturbation_events": self._new_perturbation_event[agent],
+            "combat_support_vertical_load": support_vertical_load,
             "combat_opponent_fall_events": opponent_fall,
             "combat_proof_opponent_fall_events": opponent_fall * proof_gate,
             "combat_clean_opponent_fall_events": opponent_fall * clean_attack,
@@ -1862,11 +1868,12 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         env_floor_z = self.scene.env_origins[:, 2].unsqueeze(-1)
         height = selected_pos[:, :, 2] - env_floor_z
         near_ground = height <= float(self.cfg.contact.support_ground_contact_height)
-        vertical_fraction = torch.abs(selected_forces[:, :, 2]) / torch.clamp(force_norm, min=1.0e-6)
+        vertical_load = torch.relu(selected_forces[:, :, 2])
+        vertical_fraction = vertical_load / torch.clamp(force_norm, min=1.0e-6)
         min_vertical = float(self.cfg.contact.support_ground_vertical_force_fraction)
         if min_vertical > 0.0:
             near_ground = near_ground & (vertical_fraction >= min_vertical)
-        return (force_norm * near_ground.float()).amax(dim=-1)
+        return (vertical_load * near_ground.float()).amax(dim=-1)
 
     def _support_quality(self, agent: str) -> torch.Tensor:
         support_force = self._support_contact_force(agent)
@@ -2029,8 +2036,8 @@ class GhostFighterUnitree1v1Env(DirectMARLEnv):
         ) + left_active * self._side_arm_action_magnitude(agent, False)
 
     def _support_bias(self, agent: str) -> torch.Tensor:
-        left = self._selected_body_contact_force(agent, self._left_support_body_id_tensors.get(agent))
-        right = self._selected_body_contact_force(agent, self._right_support_body_id_tensors.get(agent))
+        left = self._selected_ground_contact_force(agent, self._left_support_body_id_tensors.get(agent))
+        right = self._selected_ground_contact_force(agent, self._right_support_body_id_tensors.get(agent))
         return (left - right) / torch.clamp(left + right, min=1.0)
 
     def _leg_posture_quality(self, agent: str) -> torch.Tensor:

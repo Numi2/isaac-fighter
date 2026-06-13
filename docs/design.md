@@ -9,11 +9,11 @@ wrapper where a frozen locomotion policy supplies base actions and the fight pol
 
 ## Asymmetry
 
-Asymmetry is handled as a first-class property. `fighter_a` and `fighter_b` each have a robot name, controlled-joint list, action scale, spawn, observation dimension, action dimension, reward buffers, fall state, contact state, and statistics. The default is G1-29DoF against H1. The task can be configured as G1-vs-G1 or H1-vs-H1 by changing the fighter config and letting `__post_init__` refresh spaces.
+Asymmetry is handled as a first-class property. `fighter_a` and `fighter_b` each have a robot name, controlled-joint list, action scale, spawn, observation dimension, action dimension, reward buffers, fall state, contact state, and statistics. The default combat bootstrap is symmetric G1-29DoF vs G1-29DoF because getting both agents upright on a shared locomotion base is the shortest path to useful contact. H1 and H1-vs-H1 remain configurable targets by changing the fighter config and letting `__post_init__` refresh spaces.
 
 ## Contact
 
-Robot contact is estimated from available Isaac Lab contact tensors when present and from a root-relative closing-speed proxy when the installed asset stack does not expose net body forces. This keeps training functional across Unitree asset revisions while still logging real contact forces when contact sensors are available.
+Robot contact is estimated from available Isaac Lab contact tensors when present and from a root-relative closing-speed proxy for early engagement shaping. Proof impact and checkpoint health stay separate from the proxy. Foot support uses near-ground upward vertical load on support bodies, while robot-robot contact and torso impacts are logged separately so wall/body collisions do not masquerade as stance.
 
 ## Self-play
 

@@ -32,7 +32,7 @@ The default fight is symmetric Unitree G1-29DoF vs G1-29DoF for fastest locomoti
 Achieved:
 
 - External Isaac Lab extension registered as `GhostFighter-Unitree-1v1-Direct-v0`.
-- True multi-agent `DirectMARLEnv` with independent G1/H1 action spaces, observations, rewards, dones, logs, and reset state.
+- True multi-agent `DirectMARLEnv` with per-fighter action spaces, observations, rewards, dones, logs, and reset state.
 - Runtime Unitree asset adapter using upstream `unitree_rl_lab` robot configs and USD assets.
 - Fight rules: arena bounds, randomized facing spawns, fall/knockdown/knockout logic, timer decision, winner/loser/draw assignment.
 - Combat shaping: approach pressure, useful contact, destabilization, knockdown reward, stability, efficiency, boundary discipline, terminal outcome terms.
@@ -43,12 +43,17 @@ Achieved:
 - Opponent observations include a fixed pelvis/torso/hands/feet keypoint tail in addition to opponent root state.
 - TensorBoard combat telemetry: useful contact, training contact force, candidate body contact force, attributed opponent contact force, ground/scene force, proxy engagement, proof impact, destabilization, knockdown events, inactivity, spin-without-contact, win/loss/draw, score.
 - Training contact uses the configured proxy fallback to jumpstart engagement when clean contact attribution is sparse. Proof metrics remain separate telemetry.
+- G1 residual-locomotion mode is joint-aware: conservative legs/waist, larger arm residuals, and later leg opening to preserve the velocity base while learning contact.
+- Motion-prior path loads reference motion data, maps joints by name, trains AMP discriminators from reference-vs-rollout features, and rejects low-coverage artifacts.
+- League tooling includes main/exploiter roles, tournament health summaries, evaluation-driven promoted/suppressed tags, and sampler weighting from those tags.
+- Checkpoint health metadata tracks upright seconds, feet-ground support, caused knockdowns, mutual falls, torso-first contacts, proof impact, and health score.
+- Foot support reward uses near-ground upward vertical load on support bodies, while robot-robot proof contact remains separate from support telemetry.
 
 Next:
 
-- Scale population training across larger vectorized runs and periodic resume-from-best cycles.
-- Export deployable policy snapshots for frozen historical-opponent rollouts.
-- Run tournament ladders to update Elo, weakness scores, and matchup selection.
+- Use official `Isaac-Velocity-Flat-G1-v0` / `Isaac-Velocity-Rough-G1-v0` artifacts as the stage-1 standing/walking base before widening residual authority.
+- Resume a new bootstrap run from the latest v18/v19 checkpoint with the cleaned support signal and validated AMP artifacts.
+- Run tournament ladders to update Elo, weakness scores, league promotion, and matchup selection after standing/contact metrics visibly improve.
 - Record representative replay JSONL from late-stage checkpoints for behavior inspection.
 - Tune from telemetry toward high useful-contact, high opponent-destabilization, low passive-survival return.
 

@@ -208,6 +208,7 @@ class SelfPlayTrainingSupervisor:
             "health_score": self._latest_scalar("Info / Combat/mean_health_score_per_step"),
             "upright_seconds": self._latest_scalar("Info / Combat/mean_health_upright_seconds_per_step"),
             "feet_ground_support": self._latest_scalar("Info / Combat/mean_health_feet_ground_support_per_step"),
+            "support_vertical_load": self._latest_scalar("Info / Combat/mean_support_vertical_load_per_step"),
             "caused_knockdowns": self._latest_scalar("Info / Combat/mean_health_caused_knockdowns_per_step"),
             "mutual_falls": self._latest_scalar("Info / Combat/mean_health_mutual_falls_per_step"),
             "torso_first_contacts": self._latest_scalar("Info / Combat/mean_health_torso_first_contacts_per_step"),
